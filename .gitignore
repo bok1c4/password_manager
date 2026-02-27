@@ -1,0 +1,62 @@
+# Binaries
+pwman
+server
+dist/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log
+yarn-debug.log*
+
+# Build outputs
+src-tauri/target/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Vault data (local only - NEVER commit!)
+.pwman/
+*.db
+*.db-journal
+private.key
+public.key
+*.key
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+temp/

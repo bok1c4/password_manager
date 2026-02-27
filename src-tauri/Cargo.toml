@@ -1,0 +1,27 @@
+[package]
+name = "pwman"
+version = "1.0.0"
+description = "A secure password manager"
+authors = ["you"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+dirs = "6"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
