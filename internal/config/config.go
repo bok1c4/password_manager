@@ -16,7 +16,6 @@ type GlobalConfig struct {
 type VaultConfig struct {
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
-	GitRemote  string `json:"git_remote,omitempty"`
 	Salt       string `json:"salt,omitempty"`
 }
 

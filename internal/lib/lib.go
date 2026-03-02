@@ -354,10 +354,8 @@ func GetDevices() string {
 
 //export GetSyncStatus
 func GetSyncStatus() string {
-	gitPath := getVaultPath() + "/.git"
-	_, err := os.Stat(gitPath)
-
-	return fmt.Sprintf(`{"initialized": %v, "last_sync": null, "pending_changes": 0}`, err == nil)
+	// TODO: Integrate with P2P status
+	return fmt.Sprintf(`{"mode": "p2p", "connected_peers": 0, "last_sync": null}`)
 }
 
 //export GeneratePassword

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-A cross-platform, multi-device password manager with Tauri desktop frontend and Go backend. Uses hybrid encryption (AES-256-GCM + RSA) with Git-based synchronization between devices.
+A cross-platform, multi-device password manager with Tauri desktop frontend and Go backend. Uses hybrid encryption (AES-256-GCM + RSA) with P2P-based synchronization between devices via libp2p.
 
 ---
 
@@ -22,8 +22,9 @@ A cross-platform, multi-device password manager with Tauri desktop frontend and 
 │                              │                                           │
 │                              ▼                                           │
 │                       ┌─────────────┐                                    │
-│                       │   Git Sync  │                                    │
-│                       │  (optional) │                                    │
+│                       │    P2P      │                                    │
+│                       │   Sync      │                                    │
+│                       │  (libp2p)   │                                    │
 │                       └─────────────┘                                    │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -45,7 +46,6 @@ A cross-platform, multi-device password manager with Tauri desktop frontend and 
 | `private.key.enc` | RSA private key **encrypted with password** |
 | `private.key` | (DEPRECATED - was unencrypted) |
 | `public.key` | RSA public key |
-| `.git/` | Git repository for sync (if enabled) |
 
 ---
 
@@ -198,7 +198,7 @@ CREATE INDEX idx_entries_updated ON entries(updated_at);
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    MULTI-DEVICE APPROVAL FLOW                           │
+│                    MULTI-DEVICE APPROVAL FLOW (P2P)                     │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  EXISTING DEVICE (Arch)              NEW DEVICE (MacBook)             │
@@ -215,9 +215,9 @@ CREATE INDEX idx_entries_updated ON entries(updated_at);
 │                                                                         │
 │  ──────────────────────────────────────────────────────────────────    │
 │                                                                         │
-│  3. Enable sync:                                                       │
-│     pwman sync init --remote git@github.com:you/pwman-sync.git        │
-│     pwman sync push                                                    │
+│  3. Start P2P on Arch:                                                │
+│     pwman p2p start                                                   │
+│     → Listens on TCP + mDNS discovery                                 │
 │                                                                         │
 │  ──────────────────────────────────────────────────────────────────    │
 │                                                                         │
@@ -225,34 +225,44 @@ CREATE INDEX idx_entries_updated ON entries(updated_at);
 │     pwman init --name "MacBook"                                        │
 │     → Creates own vault with own keys                                  │
 │                                                                         │
-│  5. Export public key:                                                 │
-│     pwman devices export > macbook.pub                                 │
+│  5. Start P2P on MacBook:                                              │
+│     pwman p2p start                                                   │
+│     → Discovers Arch via mDNS (same network)                          │
+│     → Auto-connects                                                   │
 │                                                                         │
-│  ──────────────────────────────────────────────────────────────────    │
+│  6. HELLO exchange:                                                    │
+│     → MacBook sends HELLO with device info + vault ID                │
+│     → Arch sees MacBook is new (not in trusted devices)              │
 │                                                                         │
-│  6. Copy macbook.pub to Arch, then:                                    │
-│     pwman devices add ./macbook.pub                                   │
-│     → Adds MacBook as UNTRUSTED device                                 │
-│     → Generates one-time APPROVAL CODE: "ABC123"                       │
-│     → Shows approval code to user                                      │
+│  7. Approval request:                                                  │
+│     → MacBook sends REQUEST_APPROVAL                                   │
+│     → Arch shows approval prompt in UI                                 │
 │                                                                         │
-│  7. Copy approval code to MacBook                                      │
+│  User clicks "Approve" on Arch:                                        │
 │                                                                         │
-│  8. On MacBook, approve itself:                                        │
-│     pwman devices approve ABC123                                       │
-│     → Marks MacBook as TRUSTED                                         │
-│     → Triggers re-encryption of ALL passwords                          │
-│     → Now has encrypted AES keys for MacBook                          │
+│  8. Approve device:                                                    │
+│     pwman p2p approve <device-id>                                      │
+│     → Re-encrypts ALL passwords for MacBook                          │
+│     → Sends APPROVE_DEVICE with encrypted keys                        │
 │                                                                         │
-│  9. On Arch, push updated vault:                                       │
-│     pwman sync push                                                    │
-│     → Pushes vault.db with MacBook's encrypted keys                    │
-│                                                                         │
-│  10. On MacBook, pull:                                                 │
-│      pwman sync pull                                                   │
-│      → Can now decrypt all passwords!                                  │
+│  9. Sync data:                                                         │
+│     → Both devices exchange SYNC_DATA                                 │
+│     → MacBook now has all entries + encrypted keys                   │
+│     → Can decrypt all passwords!                                       │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Adding Password (Multi-Device)
+```
+pwman add github.com --username user
+
+1. Generate random 32-byte AES key
+2. Encrypt password with AES-256-GCM
+3. For each trusted device in DB:
+   - Encrypt AES key with device's RSA public key
+4. Store entry with all encrypted AES keys
+5. Broadcast ENTRY_UPDATE to all connected peers
 ```
 
 ### Adding Password (Multi-Device)
@@ -269,18 +279,7 @@ pwman add github.com --username user
 
 ---
 
-## Git-Based Sync
-
-### Repository Structure
-```
-pwman-sync/                    # Git remote repository
-├── vault.db                   # SQLite database (encrypted contents)
-├── public.key                 # Current device's public key (for new devices)
-├── devices/                   # Device public keys
-│   ├── arch-desktop.json
-│   └── macbook-pro.json
-└── .gitignore                 # Ignore private keys
-```
+## P2P-Based Sync
 
 ### Sync Flow
 ```
@@ -288,21 +287,21 @@ pwman-sync/                    # Git remote repository
 │                           SYNC PROCESS                                   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  1. git pull (fetch remote changes)                                     │
+│  1. Device A starts P2P (listens on TCP + mDNS for discovery)          │
 │                                                                         │
-│  2. Detect conflicts:                                                   │
-│     - Compare local vs remote entries by (id, version, updated_at)     │
-│     - If same entry modified on both: last-write-wins                  │
+│  2. Device B starts P2P (same)                                          │
 │                                                                         │
-│  3. Merge:                                                              │
-│     - Apply remote changes to local DB                                  │
-│     - Keep local changes with higher updated_at                         │
+│  3. Device B connects to Device A via:                                 │
+│     - mDNS (LAN discovery)                                             │
+│     - Manual peer address (if remote)                                  │
 │                                                                         │
-│  4. Check for new devices:                                             │
-│     - If new device added remotely, prompt to approve                   │
-│     - Re-encrypt AES keys for new trusted devices                       │
+│  4. HELLO exchange: exchange device info + vault ID                    │
 │                                                                         │
-│  5. git add + git commit + git push                                     │
+│  5. If new device: REQUEST_APPROVAL → user approves                     │
+│                                                                         │
+│  6. SYNC_DATA exchange: share entries + devices                        │
+│                                                                         │
+│  7. Real-time updates: ENTRY_UPDATE broadcasts on changes              │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -391,11 +390,14 @@ pwman devices add <file>                 # Add new device (creates untrusted)
 pwman devices approve <code>             # Approve this device (generate keys)
 pwman devices remove <device-id>         # Remove device
 
-# Sync
-pwman sync init --remote <url>           # Initialize sync with remote
-pwman sync push                          # Push changes to remote
-pwman sync pull                          # Pull changes from remote
-pwman sync status                        # Show sync status
+# P2P Sync (LAN-only for now)
+pwman p2p start                          # Start P2P (listen + mDNS discovery)
+pwman p2p stop                          # Stop P2P
+pwman p2p status                        # Show P2P status
+pwman p2p peers                         # List connected peers
+pwman p2p connect <address>             # Connect to peer by address
+pwman p2p approve <device-id>            # Approve pending device
+pwman p2p reject <device-id>             # Reject pending device
 
 # Import
 pwman import --from-cpp --db <postgres>  # Import from C++ implementation
@@ -414,7 +416,7 @@ require (
     github.com/spf13/cobra v1.8.0
     github.com/ProtonMail/gopenpgp/v3 v3.0.0
     github.com/mattn/go-sqlite3 v1.14.22
-    github.com/go-git/go-git/v5 v5.12.0
+    github.com/libp2p/go-libp2p v0.32.0
     golang.org/x/crypto v0.25.0
     github.com/atotto/clipboard v0.1.4
     github.com/google/uuid v1.6.0
@@ -423,151 +425,7 @@ require (
 
 ---
 
-## Sync Workflow & Device Approval
-
-### Overview
-
-The password manager uses Git-based synchronization to share vaults between devices. When a new device wants to join an existing vault, it must be approved by an already-trusted device.
-
-### Sync Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SYNC ARCHITECTURE                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   Device A (Trusted)              Git Remote              Device B (New)   │
-│   ───────────────────            ───────────              ─────────────────  │
-│        │                           │                           │             │
-│        │  1. Enable Sync           │                           │             │
-│        │ ────────────────────────▶ │                           │             │
-│        │                           │                           │             │
-│        │  2. Push vault            │                           │             │
-│        │ ────────────────────────▶ │                           │             │
-│        │                           │                           │             │
-│        │                           │  3. Clone/Pull            │             │
-│        │                           │ ◀──────────────────────────│             │
-│        │                           │                           │             │
-│        │                           │  4. Can't decrypt yet!     │             │
-│        │                           │   (needs approval)         │             │
-│        │                           │                           │             │
-│        │  5. See pending          │                           │             │
-│        │    approval request      │                           │             │
-│        │ ◀────────────────────────│                           │             │
-│        │                           │                           │             │
-│        │  6. Approve/Decline      │                           │             │
-│        │ ────────────────────────▶ │                           │             │
-│        │                           │                           │             │
-│        │  7. Push updated vault   │                           │             │
-│        │    (with new device     │                           │             │
-│        │     encrypted keys)     │                           │             │
-│        │ ────────────────────────▶ │                           │             │
-│        │                           │                           │             │
-│        │                           │  8. Pull                  │             │
-│        │                           │ ◀──────────────────────────│             │
-│        │                           │                           │             │
-│        │                           │  9. Now can decrypt!      │             │
-│        │                           │                           │             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Device Approval Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     DEVICE APPROVAL WORKFLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  NEW DEVICE (Device B)              TRUSTED DEVICE (Device A)             │
-│  ─────────────────────              ───────────────────────             │
-│                                                                             │
-│  1. Initialize vault                                                               │
-│     pwman init --name "DeviceB"                                               │
-│     → Creates own keys, empty vault                                           │
-│                                                                             │
-│                                    2. Export public key                      │
-│                                         pwman devices export > deviceb.pub   │
-│                                                                             │
-│  3. Add device (on Device A)                                                │
-│     pwman devices add deviceb.pub                                            │
-│     → Device B added as UNTRUSTED                                            │
-│     → Generates approval code: ABC123                                         │
-│                                                                             │
-│                                    4. User sees pending approval              │
-│                                       in Settings                            │
-│                                                                             │
-│  5. Approve (on Device B)                                                   │
-│     pwman devices approve ABC123                                              │
-│     → Marks self as TRUSTED                                                  │
-│     → Re-encrypts ALL passwords                                              │
-│       with new AES keys for all trusted devices                              │
-│                                                                             │
-│                                    6. Push updated vault                    │
-│                                         pwman sync push                      │
-│                                                                             │
-│  7. Pull vault                                                              │
-│     pwman sync pull                                                          │
-│     → Now has encrypted AES keys                                            │
-│     → Can decrypt all passwords!                                             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Git Sync Implementation
-
-The sync is implemented using Git to push/pull the vault database:
-
-```go
-// Sync operations in internal/sync/sync.go
-type GitSync struct {
-    repo      *gogit.Repository
-    vaultName string
-    cfg       *config.Config
-    remote    string
-}
-
-// Key operations:
-// - InitRepo(vaultPath)     : Initialize git repo in vault
-// - SetRemote(url)         : Configure remote repository
-// - Pull()                  : Pull changes from remote
-// - Push()                  : Push changes to remote  
-// - CommitAndPush(message)  : Commit and push all changes
-```
-
-### Can Git Sync Support Device Approval?
-
-**Yes, but with limitations:**
-
-| Feature | Git Sync Support | Notes |
-|---------|-----------------|-------|
-| Share encrypted vault | ✅ Full | Database is encrypted, safe to push |
-| Device discovery | ⚠️ Manual | Must exchange public keys manually |
-| Approval requests | ⚠️ Manual | User must communicate approval code |
-| Auto-approve | ❌ Not possible | Git has no real-time notifications |
-| Conflict detection | ✅ Full | Git handles merge conflicts |
-| Offline support | ✅ Full | Works without network until push |
-
-**Current Workflow:**
-1. User manually exchanges public keys (file transfer)
-2. Existing device adds new device → gets approval code
-3. User communicates code to new device (via chat/email)
-4. New device approves itself → re-encryption happens
-5. Vault pushed → new device pulls → can decrypt
-
-**Limitation:** The Git-based sync doesn't support real-time approval requests. Users must manually:
-- Export/import public keys
-- Communicate approval codes
-- Know when to sync
-
-**Alternative for Real-time Approvals:**
-- Could add a simple signaling server (WebSocket)
-- Or use GitHub/GitLab issues as approval channel
-- Or manual process as currently implemented
-
----
-
-## P2P Sync (Future)
+## P2P Sync
 
 ### Overview
 
@@ -599,31 +457,30 @@ Peer-to-peer (P2P) sync enables direct communication between devices without any
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### NAT Traversal
+### NAT Traversal (Current Limitation)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     NAT TRAVERSAL FLOW                           │
+│                     CURRENT LIMITATION                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  Device A (behind NAT)          Device B (behind NAT)           │
 │  ─────────────────────          ─────────────────────             │
 │       │                               │                          │
-│       │  1. Both connect to          │                          │
-│       │     Public STUN server       │                          │
-│       │     (free, public)           │                          │
+│       │  1. Both devices              │                          │
+│       │     start P2P locally        │                          │
 │       │───────────                   │                          │
 │       │           ───────────────────│─────────                 │
 │       │                               │                          │
-│       │  2. Get external IP:port     │                          │
-│       │     via STUN                 │                          │
+│       │  2. mDNS discovers          │                          │
+│       │     peers on LAN only!      │                          │
 │       │                               │                          │
-│       │  3. Hole punching            │                          │
-│       │     (both try to connect)    │                          │
-│       │                               │                          │
-│       │  4. Direct P2P connection!  │                          │
-│       │◀────────────────────────────▶│                          │
-│       │                               │                          │
+│       │  ❌ Cannot connect          │                          │
+│       │     across NATs (yet)        │                          │
+│                                                                 │
+│  SOLUTION: Same network (LAN) OR manual peer address           │
+│  FUTURE:    Relay server or Tor onion services                  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -631,12 +488,14 @@ Peer-to-peer (P2P) sync enables direct communication between devices without any
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| HELLO | Bidirectional | Initial handshake, exchange pubkeys |
+| HELLO | Bidirectional | Initial handshake, exchange device info |
 | REQUEST_SYNC | Bidirectional | Request vault sync |
 | SYNC_DATA | Bidirectional | Encrypted vault data |
 | REQUEST_APPROVAL | New → Trusted | Request device approval |
 | APPROVE_DEVICE | Trusted → New | Approve with encrypted keys |
 | REJECT_DEVICE | Trusted → New | Reject device |
+| ENTRY_UPDATE | Bidirectional | Real-time entry changes |
+| ENTRY_DELETE | Bidirectional | Real-time entry deletion |
 | PING/PONG | Bidirectional | Keep-alive |
 
 ### Device Approval in P2P
@@ -672,18 +531,24 @@ Peer-to-peer (P2P) sync enables direct communication between devices without any
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Comparison: Git vs P2P
+### P2P Sync Modes
 
-| Feature | Git Sync | P2P Sync |
-|---------|----------|----------|
-| Server needed | Git host | No |
-| Real-time | ❌ | ✅ |
-| NAT traversal | N/A | ✅ libp2p |
-| Device approval | Manual | Auto |
-| Offline support | ✅ | ❌ |
-| Version history | ✅ | ❌ |
-| Complexity | Low | High |
-| Setup time | 5 min | 30 min |
+| Mode | Description | Requirements |
+|------|-------------|--------------|
+| LAN (mDNS) | Local network discovery via mDNS | Same network |
+| Direct | Manual peer address connection | External IP or port forwarding |
+| Relay (Future) | Via libp2p circuit relay | Relay server |
+
+### Current Capabilities
+
+| Feature | Status |
+|---------|--------|
+| LAN discovery (mDNS) | ✅ Implemented |
+| Direct peer connection | ✅ Implemented |
+| Real-time sync | ✅ Implemented |
+| Device approval | ✅ Implemented |
+| NAT traversal | ⚠️ Limited |
+| Remote relay | 🔜 Future |
 
 ### Dependencies (P2P)
 
@@ -693,9 +558,10 @@ require (
     github.com/libp2p/go-libp2p-pubsub v0.9.0
     github.com/libp2p/go-libp2p-kad-dht v0.24.0
     github.com/libp2p/go-mdns v0.0.3
-    github.com/libp2p/go-relay-client v0.1.0
 )
 ```
+
+**Note:** Relay client (for remote P2P) is planned for future implementation.
 
 ---
 
@@ -703,28 +569,33 @@ require (
 
 | Threat | Mitigation |
 |--------|------------|
-| Server/Git breach | Zero-knowledge - all data encrypted |
 | Device theft | Private key encrypted with password (scrypt + AES-256-GCM) |
 | Brute force | Strong KDF (scrypt) - ~100ms to derive key |
 | Database leak | Passwords encrypted with AES-256-GCM |
 | Clipboard theft | Auto-clear after 30 seconds |
 | P2P eavesdropping | All P2P traffic uses Noise protocol |
 | MITM attacks | Peer fingerprint verification |
+| Network interception | Zero-knowledge - vault data encrypted end-to-end |
 
 ---
 
 ## Future Phases
 
-### Phase 2: Enhanced Sync
+### Phase 2: Remote P2P (Priority)
+- Relay server for NAT traversal
+- Tor onion services for serverless remote sync
+- Pairing code flow (simpler UX)
+
+### Phase 3: Enhanced Sync
 - Real-time sync notifications
 - Conflict resolution UI
 - Selective sync (choose which entries to sync)
 
-### Phase 3: Mobile
+### Phase 4: Mobile
 - iOS/Android native apps
 - Biometric unlock (Face ID / Fingerprint)
 - Push notifications
 
-### Phase 4: Web
+### Phase 5: Web
 - Web-based access via PWA
 - Browser extension

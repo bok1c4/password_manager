@@ -9,7 +9,7 @@ This document provides instructions for AI assistants working on this password m
 A cross-platform password manager written in Go with:
 - Hybrid encryption (AES-256-GCM + PGP)
 - SQLite storage
-- Git-based sync between devices
+- P2P-based sync between devices (via libp2p)
 - Multi-device support with device-specific keys
 
 ---
@@ -69,7 +69,7 @@ internal/           - Private application code
   cli/              - Cobra command handlers
   crypto/           - Encryption operations
   storage/          - Database operations
-  sync/             - Git sync logic
+  p2p/              - P2P sync logic (libp2p)
   device/           - Device management
   config/           - Configuration
 pkg/models/         - Public data models (shared)
@@ -135,7 +135,7 @@ Current key dependencies:
 - `github.com/spf13/cobra` - CLI framework
 - `github.com/ProtonMail/gopenpgp/v3` - PGP encryption
 - `github.com/mattn/go-sqlite3` - SQLite driver
-- `github.com/go-git/go-git/v5` - Git operations
+- `github.com/libp2p/go-libp2p` - P2P networking
 
 ---
 
@@ -160,7 +160,7 @@ golangci-lint run
 
 ---
 
-## Multi-Device Flow Reference
+## Multi-Device Flow Reference (P2P)
 
 ```
 Device A (existing)          Device B (new)
@@ -174,22 +174,26 @@ pwman add github.com
          │ encrypts password
          │ stores AES key encrypted for Device A
          │
-pwman devices export > a.pub
-         │
-         └────────────────────► pwman init --name "Mac"
-                                  │
-                                  │ generates own key pair
-                                  │
-                              pwman devices add a.pub
-                                  │
-                                  │ (manual transfer)
-                                  │
-◄───────────────────────────── re-encrypts all AES keys
-         │                       for Device B
-         │ exports vault
-         │
-◄───────────────────────────── imports vault
-         │                       can now decrypt all
+pwman p2p start              
+         │                     pwman init --name "Mac"
+         │                     │
+         │◄────────────────────┤ generates own key pair
+         │                     │
+         │                     pwman p2p start
+         │                     │ (mDNS discovers Device A)
+         │◄───────────────────►│ auto-connect
+         │                     │
+         │  HELLO exchange     │
+         │  REQUEST_APPROVAL   │
+         │                     │
+User approves on Device A ──►│
+         │                     │
+         │  APPROVE_DEVICE     │ (re-encrypted keys)
+         │◄───────────────────┤
+         │                     │
+         │  SYNC_DATA          │ (all entries)
+         │◄───────────────────►│
+         │                     │ can now decrypt all
 ```
 
 ---

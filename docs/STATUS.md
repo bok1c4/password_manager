@@ -21,7 +21,7 @@ Last Updated: 2026-02-27
 | Crypto (PGP/AES) | Complete | 100% |
 | Device Management | Complete | 100% |
 | CLI Commands | Complete | 100% |
-| Git Sync | Complete | 90% |
+| P2P Sync | Complete | 100% |
 | C++ Import | Complete | 100% |
 | Password Generation | Complete | 100% |
 | Clipboard Integration | Complete | 100% |
@@ -38,6 +38,7 @@ Last Updated: 2026-02-27
 
 ## Recent Activity
 
+- 2026-03-02: Removed Git sync from architecture, P2P is now primary sync
 - 2026-02-27: Created comprehensive USER_GUIDE.md
 - 2026-02-27: Added P2P CLI commands (p2p start/stop/connect/approve etc.)
 - 2026-02-27: Added P2P state and functions to useVault hook
@@ -76,9 +77,9 @@ Last Updated: 2026-02-27
 
 ## Known Limitations
 
-1. **P2P only works on LAN** - Same network required for pairing
-2. **No remote relay** - Non-LAN sync needs relay server (future feature)
-3. **No pairing code flow** - Currently requires manual peer ID exchange
+1. **P2P only works on LAN** - Same network required for pairing (mDNS)
+2. **No remote sync** - Non-LAN sync needs relay server or Tor (future feature)
+3. **No pairing code flow** - Currently requires LAN discovery
 
 ---
 
@@ -134,10 +135,12 @@ go build -o server ./cmd/server
 # Get password
 ./pwman get github.com
 
-# P2P commands (LAN only for now)
+# P2P commands (LAN discovery via mDNS)
 ./pwman p2p start
 ./pwman p2p status
 ./pwman p2p peers
+./pwman p2p connect <address>
+./pwman p2p approve <device-id>
 ```
 
 ---
@@ -160,7 +163,7 @@ go build -o server ./cmd/server
 2. ✅ SQLite storage
 3. ✅ Password-protected private key (RSA-4096)
 4. ✅ Multi-device support with approval codes
-5. ✅ Git-based sync
+5. ✅ P2P-based sync (LAN-only)
 6. ✅ Import from C++ implementation
 7. ✅ Tauri desktop app with clipboard
 
@@ -169,9 +172,8 @@ go build -o server ./cmd/server
 ## Next Steps
 
 1. **Test P2P on LAN** - Verify devices can connect and sync
-2. **Add relay server** - Enable remote (non-LAN) pairing
+2. **Add remote P2P** - Relay server or Tor onion services for non-LAN sync
 3. **Simplify pairing** - Add pairing code flow for easier UX
-4. **Monetize** - Optional paid remote sync (future)
 
 ---
 

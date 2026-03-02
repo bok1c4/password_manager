@@ -36,5 +36,4 @@ const (
 	MetaVersion   = "version"
 	MetaCreatedAt = "created_at"
 	MetaLastSync  = "last_sync"
-	MetaGitRemote = "git_remote"
 )

@@ -28,11 +28,10 @@ All features implemented. Waiting for testing to verify everything works correct
 - [ ] Verify Device A receives it
 - [ ] Test clipboard operations
 - [ ] Test vault switching
-- [ ] Test Git sync still works
 
 ### 10.3 Known Limitations (Post-MVP)
 - [ ] P2P works on LAN (same network)
-- [ ] Remote (non-LAN) requires relay server
+- [ ] Remote (non-LAN) requires relay server or Tor
 - [ ] Pairing code flow not implemented yet
 
 ---
@@ -56,10 +55,13 @@ All features implemented. Waiting for testing to verify everything works correct
 - Re-encryption on approval
 - CLI commands
 
-### Phase 7: Git Sync ✅
-- Git integration
-- Merge logic
-- CLI sync commands
+### Phase 7: P2P Sync ✅ (replaced Git Sync)
+- libp2p integration
+- mDNS LAN discovery
+- Sync protocol (HELLO, REQUEST_SYNC, SYNC_DATA, etc.)
+- Device approval via P2P
+- Real-time entry updates
+- CLI p2p commands
 
 ### Phase 8: Tauri Frontend ✅
 - Vault unlock flow
@@ -93,11 +95,11 @@ All features implemented. Waiting for testing to verify everything works correct
    - Two instances on same machine
    - Use localhost for P2P
 
-2. **LAN Testing**
+2. **LAN Testing** (Primary for MVP)
    - Two devices on same network
    - Test mDNS discovery
 
-3. **Real Network**
+3. **Real Network** (Future)
    - Different NATs
    - Mobile hotspot
    - VPN scenarios
@@ -107,7 +109,7 @@ All features implemented. Waiting for testing to verify everything works correct
 #### Critical Path (Must Pass)
 1. Initialize vault → Add password → Copy password
 2. Switch vaults → Verify entries isolated
-3. P2P connect → Sync → Verify both devices have same data
+3. P2P connect (LAN) → Sync → Verify both devices have same data
 4. Approve device → Re-encrypt → Verify both can decrypt
 
 #### Edge Cases
@@ -171,15 +173,15 @@ npm run build
 
 ### High Priority
 - [ ] Remote P2P via relay server
+- [ ] Tor onion services for serverless remote sync
 - [ ] Pairing code flow (simpler UX)
-- [ ] Real-time sync notifications
 
 ### Medium Priority
+- [ ] Real-time sync notifications
 - [ ] Mobile apps (iOS/Android)
 - [ ] Cloud backup option
-- [ ] Password health checks
 
 ### Low Priority
+- [ ] Password health checks
 - [ ] Browser extension
 - [ ] TOTP support
-- [ ] Secure notes
