@@ -97,6 +97,37 @@ func (p *P2PManager) Start() error {
 
 	host.SetStreamHandler("/pwman/1.0.0", p.handleStream)
 
+	host.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(n network.Network, c network.Conn) {
+			pid := c.RemotePeer()
+			fmt.Printf("[P2P] Peer connected: %s\n", pid)
+			p.mu.Lock()
+			p.peers[pid.String()] = PeerInfo{
+				ID:        pid.String(),
+				Connected: true,
+				LastSeen:  time.Now(),
+			}
+			p.mu.Unlock()
+
+			p.connectedCh <- PeerInfo{
+				ID:        pid.String(),
+				Connected: true,
+			}
+		},
+		DisconnectedF: func(n network.Network, c network.Conn) {
+			pid := c.RemotePeer()
+			fmt.Printf("[P2P] Peer disconnected: %s\n", pid)
+			p.mu.Lock()
+			if peer, ok := p.peers[pid.String()]; ok {
+				peer.Connected = false
+				p.peers[pid.String()] = peer
+			}
+			p.mu.Unlock()
+
+			p.disconnectedCh <- pid.String()
+		},
+	})
+
 	if p.enableMDNS() {
 		if err := p.startMDNS(); err != nil {
 			fmt.Printf("Warning: failed to start mDNS discovery: %v\n", err)
