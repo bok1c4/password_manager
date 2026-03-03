@@ -58,6 +58,7 @@ type Vault struct {
 	privateKey *crypto.KeyPair
 	storage    *storage.SQLite
 	cfg        *config.Config
+	vaultName  string
 }
 
 type Entry struct {
@@ -273,6 +274,7 @@ func handleUnlock(w http.ResponseWriter, r *http.Request) {
 		privateKey: &crypto.KeyPair{PrivateKey: privateKey},
 		storage:    db,
 		cfg:        vaultConfig,
+		vaultName:  activeVault,
 	}
 
 	jsonResponse(w, Response{Success: true})
@@ -1138,9 +1140,9 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 	vaultLock.Lock()
 	deviceID := vault.cfg.DeviceID
 	deviceName := vault.cfg.DeviceName
-	log.Printf("[Pairing] Vault cfg: %+v", vault.cfg)
-	publicKeyPath := config.PublicKeyPathForVault(vault.cfg.DeviceName)
-	log.Printf("[Pairing] DeviceName: '%s', publicKeyPath: '%s'", deviceName, publicKeyPath)
+	vaultName := vault.vaultName
+	publicKeyPath := config.PublicKeyPathForVault(vaultName)
+	log.Printf("[Pairing] DeviceName: '%s', vaultName: '%s', publicKeyPath: '%s'", deviceName, vaultName, publicKeyPath)
 	vaultLock.Unlock()
 
 	log.Printf("[Pairing] Looking for public key at: %s", publicKeyPath)
