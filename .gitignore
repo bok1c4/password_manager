@@ -1,7 +1,7 @@
 # Binaries
 pwman
 pwman-server
-server
+/server
 dist/
 
 # Go
