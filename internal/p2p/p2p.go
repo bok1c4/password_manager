@@ -178,14 +178,19 @@ func (p *P2PManager) HandlePeerFound(info peer.AddrInfo) {
 }
 
 func (p *P2PManager) ConnectToPeer(addr string) error {
+	fmt.Printf("[P2P] ConnectToPeer called with: %s\n", addr)
 	addrInfo, err := peer.AddrInfoFromString(addr)
 	if err != nil {
 		return fmt.Errorf("failed to parse address: %w", err)
 	}
 
+	fmt.Printf("[P2P] Dialing peer: %s at %v\n", addrInfo.ID, addrInfo.Addrs)
+
 	if err := p.host.Connect(p.ctx, *addrInfo); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
+
+	fmt.Printf("[P2P] Successfully connected to: %s\n", addrInfo.ID)
 
 	p.mu.Lock()
 	p.peers[addrInfo.ID.String()] = PeerInfo{
