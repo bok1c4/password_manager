@@ -115,6 +115,7 @@ var initCmd = &cobra.Command{
 	},
 }
 
+var unlockVault string
 var unlockPassword string
 
 var unlockCmd = &cobra.Command{
@@ -126,6 +127,24 @@ var unlockCmd = &cobra.Command{
 			fmt.Println("[ERROR] Vault not initialized. Run 'pwman init' first")
 			os.Exit(1)
 		}
+
+		vaultName := unlockVault
+		if vaultName == "" {
+			cfg, _ := config.LoadGlobalConfig()
+			if cfg != nil && cfg.ActiveVault != "" {
+				vaultName = cfg.ActiveVault
+			}
+		}
+
+		if vaultName == "" {
+			fmt.Println("[ERROR] No vault found. Specify one with --vault flag")
+			os.Exit(1)
+		}
+
+		// Switch to the vault first
+		useReq := map[string]string{"vault": vaultName}
+		useBody, _ := json.Marshal(useReq)
+		http.Post(apiBase+"/vaults/use", "application/json", bytes.NewBuffer(useBody))
 
 		password := unlockPassword
 		if password == "" {
@@ -153,7 +172,7 @@ var unlockCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Println("[INFO] Vault unlocked successfully")
+		fmt.Printf("[INFO] Vault '%s' unlocked successfully\n", vaultName)
 	},
 }
 
@@ -172,7 +191,8 @@ func init() {
 	initCmd.MarkFlagRequired("name")
 	AddCommand(initCmd)
 
-	unlockCmd.Flags().StringVarP(&unlockPassword, "password", "p", "", "Vault password")
+	unlockCmd.Flags().StringVar(&unlockVault, "vault", "", "Vault name to unlock")
+	unlockCmd.Flags().StringVarP(&unlockPassword, "password", "p", "", "Vault password (optional, will prompt if not provided)")
 	AddCommand(unlockCmd)
 	AddCommand(lockCmd)
 }

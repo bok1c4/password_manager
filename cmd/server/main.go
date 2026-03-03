@@ -1138,11 +1138,15 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 	vaultLock.Lock()
 	deviceID := vault.cfg.DeviceID
 	deviceName := vault.cfg.DeviceName
+	log.Printf("[Pairing] Vault cfg: %+v", vault.cfg)
 	publicKeyPath := config.PublicKeyPathForVault(vault.cfg.DeviceName)
+	log.Printf("[Pairing] DeviceName: '%s', publicKeyPath: '%s'", deviceName, publicKeyPath)
 	vaultLock.Unlock()
 
+	log.Printf("[Pairing] Looking for public key at: %s", publicKeyPath)
 	publicKeyBytes, err := os.ReadFile(publicKeyPath)
 	if err != nil {
+		log.Printf("[Pairing] Error reading public key: %v", err)
 		jsonResponse(w, Response{Success: false, Error: "failed to read public key"})
 		return
 	}
