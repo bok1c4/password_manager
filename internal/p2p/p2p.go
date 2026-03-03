@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -158,6 +159,39 @@ func (p *P2PManager) startMDNS() error {
 
 func (p *P2PManager) handleStream(stream network.Stream) {
 	fmt.Println("[P2P] New stream handler called")
+
+	buf := make([]byte, 1024*1024)
+	for {
+		n, err := stream.Read(buf)
+		if err != nil {
+			break
+		}
+
+		var msg SyncMessage
+		if err := json.Unmarshal(buf[:n], &msg); err != nil {
+			fmt.Printf("[P2P] Failed to parse message: %v\n", err)
+			continue
+		}
+
+		fmt.Printf("[P2P] Received message: %s from %s\n", msg.Type, msg.PeerID)
+		p.handleMessage(msg, stream.Conn().RemotePeer())
+	}
+}
+
+func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
+	switch msg.Type {
+	case MsgTypeRequestSync:
+		fmt.Printf("[P2P] Received sync request from: %s\n", fromPeer)
+		p.messageChan <- msg
+	case MsgTypeSyncData:
+		fmt.Printf("[P2P] Received sync data from: %s\n", fromPeer)
+		p.messageChan <- msg
+	case MsgTypeHello:
+		fmt.Printf("[P2P] Received HELLO from: %s\n", fromPeer)
+		p.messageChan <- msg
+	default:
+		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
+	}
 }
 
 func (p *P2PManager) HandlePeerFound(info peer.AddrInfo) {
@@ -363,4 +397,28 @@ func (p *P2PManager) Stop() {
 
 func (p *P2PManager) IsRunning() bool {
 	return p.host != nil
+}
+
+func (p *P2PManager) SyncWithPeers(fullSync bool) error {
+	peers := p.GetConnectedPeers()
+	if len(peers) == 0 {
+		return fmt.Errorf("no peers connected")
+	}
+
+	msg := SyncMessage{
+		Type:      MsgTypeRequestSync,
+		PeerID:    p.deviceID,
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	for _, peer := range peers {
+		if peer.Connected {
+			fmt.Printf("[P2P] Sending sync request to: %s\n", peer.ID)
+			if err := p.SendMessage(peer.ID, msg); err != nil {
+				fmt.Printf("[P2P] Failed to send sync to %s: %v\n", peer.ID, err)
+			}
+		}
+	}
+
+	return nil
 }

@@ -1324,6 +1324,7 @@ func main() {
 	http.HandleFunc("/api/p2p/approvals", handleP2PApprovals)
 	http.HandleFunc("/api/p2p/approve", handleP2PApprove)
 	http.HandleFunc("/api/p2p/reject", handleP2PReject)
+	http.HandleFunc("/api/p2p/sync", handleP2PSync)
 
 	// Pairing endpoints
 	http.HandleFunc("/api/pairing/generate", handlePairingGenerate)
@@ -1332,4 +1333,69 @@ func main() {
 
 	log.Println("Starting pwman API server on :18475")
 	log.Fatal(http.ListenAndServe(":18475", nil))
+}
+
+type SyncRequest struct {
+	FullSync bool `json:"full_sync"`
+}
+
+func handleP2PSync(w http.ResponseWriter, r *http.Request) {
+	p2pLock.Lock()
+	if p2pManager == nil || !p2pManager.IsRunning() {
+		p2pLock.Unlock()
+		jsonResponse(w, Response{Success: false, Error: "P2P not running"})
+		return
+	}
+	p2pLock.Unlock()
+
+	var req SyncRequest
+	if r.Method == "POST" {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	vaultLock.Lock()
+	if vault == nil || vault.storage == nil {
+		vaultLock.Unlock()
+		jsonResponse(w, Response{Success: false, Error: "vault not unlocked"})
+		return
+	}
+
+	entries, err := vault.storage.ListEntries()
+	vaultLock.Unlock()
+
+	if err != nil {
+		jsonResponse(w, Response{Success: false, Error: "failed to get entries"})
+		return
+	}
+
+	syncData := make([]map[string]interface{}, len(entries))
+	for i, e := range entries {
+		syncData[i] = map[string]interface{}{
+			"id":                 e.ID,
+			"site":               e.Site,
+			"username":           e.Username,
+			"encrypted_password": e.EncryptedPassword,
+			"encrypted_aes_keys": e.EncryptedAESKeys,
+			"notes":              e.Notes,
+			"version":            e.Version,
+			"created_at":         e.CreatedAt.Unix(),
+			"updated_at":         e.UpdatedAt.Unix(),
+		}
+	}
+
+	p2pLock.Lock()
+	err = p2pManager.SyncWithPeers(req.FullSync)
+	p2pLock.Unlock()
+
+	if err != nil {
+		log.Printf("[Sync] Error: %v", err)
+		jsonResponse(w, Response{Success: false, Error: "sync failed"})
+		return
+	}
+
+	jsonResponse(w, Response{Success: true, Data: map[string]interface{}{
+		"entries":   syncData,
+		"synced":    true,
+		"timestamp": time.Now().Unix(),
+	}})
 }
