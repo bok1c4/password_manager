@@ -38,6 +38,7 @@ export const api = {
   getVaults: () => apiCall('/vaults'),
   useVault: (vault: string) => apiCall('/vaults/use', { method: 'POST', body: JSON.stringify({ vault }) }),
   createVault: (name: string) => apiCall('/vaults/create', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteVault: (name: string, deleteDataDir: boolean = true) => apiCall('/vaults/delete', { method: 'POST', body: JSON.stringify({ name, delete_data_dir: deleteDataDir }) }),
   
   // P2P
   p2pStatus: () => apiCall('/p2p/status'),

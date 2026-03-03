@@ -63,6 +63,7 @@ interface VaultState {
   fetchVaults: () => Promise<void>;
   switchVault: (vault: string) => Promise<void>;
   createVault: (name: string) => Promise<void>;
+  deleteVault: (name: string) => Promise<void>;
   initVault: (name: string, password: string, vault?: string) => Promise<void>;
   unlock: (password: string) => Promise<void>;
   lock: () => Promise<void>;
@@ -85,6 +86,7 @@ interface VaultState {
   p2pSync: (fullSync?: boolean) => Promise<void>;
   pairingGenerate: () => Promise<{code: string, device_name: string, expires_in: number}>;
   pairingJoin: (code: string, deviceName: string) => Promise<void>;
+  clearError: () => void;
 }
 
 export const useVault = create<VaultState>((set, get) => ({
@@ -138,6 +140,18 @@ export const useVault = create<VaultState>((set, get) => ({
     try {
       await api.createVault(name);
       set({ activeVault: '', unlocked: false, entries: [], devices: [], initialized: false });
+      await get().fetchVaults();
+    } catch (e: any) {
+      set({ error: e.toString() });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  deleteVault: async (name: string) => {
+    set({ loading: true, error: null });
+    try {
+      await api.deleteVault(name, true);
       await get().fetchVaults();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -381,5 +395,9 @@ export const useVault = create<VaultState>((set, get) => ({
   pairingJoin: async (code: string, deviceName: string) => {
     await api.pairingJoin(code, deviceName);
     await get().fetchDevices();
+  },
+
+  clearError: () => {
+    set({ error: null });
   },
 }));

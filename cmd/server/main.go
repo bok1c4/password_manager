@@ -94,7 +94,25 @@ type Response struct {
 
 func jsonResponse(w http.ResponseWriter, v Response) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	json.NewEncoder(w).Encode(v)
+}
+
+func corsHandler(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next(w, r)
+	}
 }
 
 func handleInit(w http.ResponseWriter, r *http.Request) {
@@ -715,6 +733,69 @@ func handleVaultCreate(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, Response{Success: true})
 }
 
+func handleVaultDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		jsonResponse(w, Response{Success: false, Error: "method not allowed"})
+		return
+	}
+
+	type DeleteRequest struct {
+		Name          string `json:"name"`
+		DeleteDataDir bool   `json:"delete_data_dir,omitempty"`
+	}
+	var req DeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, Response{Success: false, Error: err.Error()})
+		return
+	}
+
+	if req.Name == "" {
+		jsonResponse(w, Response{Success: false, Error: "vault name required"})
+		return
+	}
+
+	globalCfg, err := config.LoadGlobalConfig()
+	if err != nil {
+		jsonResponse(w, Response{Success: false, Error: err.Error()})
+		return
+	}
+
+	found := false
+	for _, v := range globalCfg.Vaults {
+		if v == req.Name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		jsonResponse(w, Response{Success: false, Error: "vault not found"})
+		return
+	}
+
+	vaultLock.Lock()
+	if vault != nil && vault.vaultName == req.Name {
+		vault.storage.Close()
+		vault = nil
+	}
+	vaultLock.Unlock()
+
+	if req.DeleteDataDir {
+		vaultPath := config.VaultPath(req.Name)
+		if err := os.RemoveAll(vaultPath); err != nil {
+			jsonResponse(w, Response{Success: false, Error: "failed to delete vault directory: " + err.Error()})
+			return
+		}
+	}
+
+	globalCfg.RemoveVault(req.Name)
+	if err := globalCfg.Save(); err != nil {
+		jsonResponse(w, Response{Success: false, Error: "failed to save config: " + err.Error()})
+		return
+	}
+
+	jsonResponse(w, Response{Success: true})
+}
+
 type P2PPeerInfo struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -1292,44 +1373,45 @@ func handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	http.HandleFunc("/api/init", handleInit)
-	http.HandleFunc("/api/unlock", handleUnlock)
-	http.HandleFunc("/api/lock", handleLock)
-	http.HandleFunc("/api/is_unlocked", handleIsUnlocked)
-	http.HandleFunc("/api/is_initialized", handleIsInitialized)
-	http.HandleFunc("/api/entries", handleGetEntries)
-	http.HandleFunc("/api/entries/add", handleAddEntry)
-	http.HandleFunc("/api/entries/update", handleUpdateEntry)
-	http.HandleFunc("/api/entries/delete", handleDeleteEntry)
-	http.HandleFunc("/api/entries/get_password", handleGetPassword)
-	http.HandleFunc("/api/devices", handleGetDevices)
-	http.HandleFunc("/api/sync/status", handleGetSyncStatus)
-	http.HandleFunc("/api/generate", handleGeneratePassword)
-	http.HandleFunc("/api/vaults", handleVaults)
-	http.HandleFunc("/api/vaults/use", handleVaultUse)
-	http.HandleFunc("/api/vaults/create", handleVaultCreate)
+	http.HandleFunc("/api/init", corsHandler(handleInit))
+	http.HandleFunc("/api/unlock", corsHandler(handleUnlock))
+	http.HandleFunc("/api/lock", corsHandler(handleLock))
+	http.HandleFunc("/api/is_unlocked", corsHandler(handleIsUnlocked))
+	http.HandleFunc("/api/is_initialized", corsHandler(handleIsInitialized))
+	http.HandleFunc("/api/entries", corsHandler(handleGetEntries))
+	http.HandleFunc("/api/entries/add", corsHandler(handleAddEntry))
+	http.HandleFunc("/api/entries/update", corsHandler(handleUpdateEntry))
+	http.HandleFunc("/api/entries/delete", corsHandler(handleDeleteEntry))
+	http.HandleFunc("/api/entries/get_password", corsHandler(handleGetPassword))
+	http.HandleFunc("/api/devices", corsHandler(handleGetDevices))
+	http.HandleFunc("/api/sync/status", corsHandler(handleGetSyncStatus))
+	http.HandleFunc("/api/generate", corsHandler(handleGeneratePassword))
+	http.HandleFunc("/api/vaults", corsHandler(handleVaults))
+	http.HandleFunc("/api/vaults/use", corsHandler(handleVaultUse))
+	http.HandleFunc("/api/vaults/create", corsHandler(handleVaultCreate))
+	http.HandleFunc("/api/vaults/delete", corsHandler(handleVaultDelete))
 
 	// Test endpoint
-	http.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/ping", corsHandler(func(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, Response{Success: true, Data: "pong"})
-	})
+	}))
 
 	// P2P endpoints
-	http.HandleFunc("/api/p2p/status", handleP2PStatus)
-	http.HandleFunc("/api/p2p/start", handleP2PStart)
-	http.HandleFunc("/api/p2p/stop", handleP2PStop)
-	http.HandleFunc("/api/p2p/peers", handleP2PPeers)
-	http.HandleFunc("/api/p2p/connect", handleP2PConnect)
-	http.HandleFunc("/api/p2p/disconnect", handleP2PDisconnect)
-	http.HandleFunc("/api/p2p/approvals", handleP2PApprovals)
-	http.HandleFunc("/api/p2p/approve", handleP2PApprove)
-	http.HandleFunc("/api/p2p/reject", handleP2PReject)
-	http.HandleFunc("/api/p2p/sync", handleP2PSync)
+	http.HandleFunc("/api/p2p/status", corsHandler(handleP2PStatus))
+	http.HandleFunc("/api/p2p/start", corsHandler(handleP2PStart))
+	http.HandleFunc("/api/p2p/stop", corsHandler(handleP2PStop))
+	http.HandleFunc("/api/p2p/peers", corsHandler(handleP2PPeers))
+	http.HandleFunc("/api/p2p/connect", corsHandler(handleP2PConnect))
+	http.HandleFunc("/api/p2p/disconnect", corsHandler(handleP2PDisconnect))
+	http.HandleFunc("/api/p2p/approvals", corsHandler(handleP2PApprovals))
+	http.HandleFunc("/api/p2p/approve", corsHandler(handleP2PApprove))
+	http.HandleFunc("/api/p2p/reject", corsHandler(handleP2PReject))
+	http.HandleFunc("/api/p2p/sync", corsHandler(handleP2PSync))
 
 	// Pairing endpoints
-	http.HandleFunc("/api/pairing/generate", handlePairingGenerate)
-	http.HandleFunc("/api/pairing/join", handlePairingJoin)
-	http.HandleFunc("/api/pairing/status", handlePairingStatus)
+	http.HandleFunc("/api/pairing/generate", corsHandler(handlePairingGenerate))
+	http.HandleFunc("/api/pairing/join", corsHandler(handlePairingJoin))
+	http.HandleFunc("/api/pairing/status", corsHandler(handlePairingStatus))
 
 	log.Println("Starting pwman API server on :18475")
 	log.Fatal(http.ListenAndServe(":18475", nil))

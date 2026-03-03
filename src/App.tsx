@@ -3,97 +3,228 @@ import { useVault } from './hooks/useVault';
 import { PasswordList } from './components/PasswordList';
 import { Settings } from './components/Settings';
 
-type Tab = 'passwords' | 'settings';
+type View = 'home' | 'init' | 'unlock' | 'app';
 
 function App() {
-  const { initialized, unlocked, loading, error, vaults, activeVault, checkInitialized, initVault, unlock, lock, switchVault, createVault } = useVault();
+  const {
+    unlocked,
+    loading,
+    error,
+    vaults,
+    activeVault,
+    checkInitialized,
+    initVault,
+    unlock,
+    lock,
+    switchVault,
+    deleteVault,
+    clearError
+  } = useVault();
+  
   const [password, setPassword] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [newVaultName, setNewVaultName] = useState('');
-  const [showCreateVault, setShowCreateVault] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>('passwords');
-  const [selectedVaultForInit, setSelectedVaultForInit] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'passwords' | 'settings'>('passwords');
+  const [view, setView] = useState<View>('home');
+  const [selectedVault, setSelectedVault] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   useEffect(() => {
     checkInitialized();
   }, []);
 
+  useEffect(() => {
+    // If there are initialized vaults, we can show the home screen
+    // If a vault is unlocked, show the app view
+    if (unlocked) {
+      setView('app');
+    }
+  }, [unlocked]);
+
   const handleInit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length < 8) {
+    if (password.length < 8 || !deviceName.trim()) {
       return;
     }
-    const vault = selectedVaultForInit || newVaultName.trim() || undefined;
+    const vault = newVaultName.trim() || 'default';
     await initVault(deviceName, password, vault);
-    setSelectedVaultForInit(null);
-    setDeviceName('');
     setPassword('');
+    setDeviceName('');
+    setNewVaultName('');
+    setView('home');
   };
 
-  const handleCreateVault = async () => {
-    if (newVaultName.trim()) {
-      await createVault(newVaultName.trim());
-      setSelectedVaultForInit(newVaultName.trim());
-      setNewVaultName('');
-      setShowCreateVault(false);
-    }
-  };
+
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!password) return;
     await unlock(password);
+    setPassword('');
   };
 
-  const handleSwitchToUninitializedVault = async (vaultName: string) => {
-    await switchVault(vaultName);
-    setSelectedVaultForInit(vaultName);
+  const handleDeleteVault = async (vaultName: string) => {
+    await deleteVault(vaultName);
+    setDeleteConfirm(null);
   };
 
-  // Initialize screen
-  if (!initialized || selectedVaultForInit) {
-    const uninitializedVaults = vaults.filter(v => !v.initialized);
-    const showVaultSelect = uninitializedVaults.length > 0;
-    
+  const openUnlock = (vaultName: string) => {
+    switchVault(vaultName);
+    setSelectedVault(vaultName);
+    setView('unlock');
+  };
+
+  const openInit = () => {
+    setNewVaultName('');
+    setDeviceName('');
+    setPassword('');
+    setView('init');
+  };
+
+  const goHome = () => {
+    setView('home');
+    setSelectedVault(null);
+    setPassword('');
+    clearError();
+  };
+
+  // Home Screen - List all vaults
+  if (view === 'home') {
+    return (
+      <div className="min-h-screen bg-background-light dark:bg-background-dark flex items-center justify-center p-4">
+        <div className="w-full max-w-2xl">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold mb-2">Password Manager</h1>
+            <p className="text-gray-500">Select a vault or create a new one</p>
+          </div>
+
+          {/* Vault List */}
+          <div className="space-y-3 mb-6">
+            {vaults.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <p>No vaults found. Create your first vault to get started.</p>
+              </div>
+            ) : (
+              vaults.map((vault) => (
+                <div
+                  key={vault.name}
+                  className="bg-white dark:bg-surface-dark rounded-lg shadow p-4 flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                      <span className="text-lg">🔐</span>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">{vault.name}</h3>
+                      <p className="text-sm text-gray-500">
+                        {vault.initialized ? 'Initialized' : 'Not initialized'}
+                        {vault.active && ' • Active'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    {vault.initialized ? (
+                      <button
+                        onClick={() => openUnlock(vault.name)}
+                        className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition"
+                      >
+                        Login
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setNewVaultName(vault.name);
+                          setView('init');
+                        }}
+                        className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition"
+                      >
+                        Setup
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setDeleteConfirm(vault.name)}
+                      className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Create New Vault Button */}
+          <button
+            onClick={openInit}
+            className="w-full py-4 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-500 hover:border-primary hover:text-primary transition flex items-center justify-center gap-2"
+          >
+            <span className="text-xl">+</span>
+            Create New Vault
+          </button>
+
+          {/* Delete Confirmation Modal */}
+          {deleteConfirm && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-surface-dark p-6 rounded-lg shadow-lg max-w-md">
+                <h3 className="text-lg font-bold mb-2">Delete Vault?</h3>
+                <p className="text-gray-500 mb-4">
+                  Are you sure you want to delete "{deleteConfirm}"? This action cannot be undone and all passwords will be lost.
+                </p>
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setDeleteConfirm(null)}
+                    className="px-4 py-2 border rounded"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleDeleteVault(deleteConfirm)}
+                    disabled={loading}
+                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
+                  >
+                    {loading ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+              <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Init Vault Screen
+  if (view === 'init') {
     return (
       <div className="min-h-screen bg-background-light dark:bg-background-dark flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="text-6xl mb-4">Password Manager</div>
-            <h1 className="text-2xl font-bold">Password Manager</h1>
+            <h1 className="text-2xl font-bold">Create New Vault</h1>
             <p className="text-gray-500 mt-2">
-              {selectedVaultForInit ? `Set up "${selectedVaultForInit}" vault` : (showVaultSelect ? 'Set up your vault' : 'Create your vault')}
+              {newVaultName ? `Setting up "${newVaultName}"` : 'Set up your new vault'}
             </p>
           </div>
 
           <form onSubmit={handleInit} className="space-y-4">
-            {!selectedVaultForInit && showVaultSelect ? (
-              <div>
-                <label className="block text-sm font-medium mb-1">Select Vault</label>
-                <select
-                  value={newVaultName}
-                  onChange={(e) => setNewVaultName(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
-                >
-                  <option value="">Choose a vault...</option>
-                  {uninitializedVaults.map(v => (
-                    <option key={v.name} value={v.name}>{v.name}</option>
-                  ))}
-                </select>
-              </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium mb-1">Vault Name</label>
-                <input
-                  type="text"
-                  value={selectedVaultForInit || newVaultName}
-                  onChange={(e) => setNewVaultName(e.target.value)}
-                  placeholder="e.g., work, personal"
-                  className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
-                  readOnly={!!selectedVaultForInit}
-                />
-              </div>
-            )}
             <div>
+              <label className="block text-sm font-medium mb-1">Vault Name</label>
+              <input
+                type="text"
+                value={newVaultName}
+                onChange={(e) => setNewVaultName(e.target.value)}
+                placeholder="e.g., work, personal"
+                className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Device Name</label>
               <input
                 type="text"
                 value={deviceName}
@@ -104,6 +235,7 @@ function App() {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium mb-1">Master Password</label>
               <input
                 type="password"
                 value={password}
@@ -115,140 +247,91 @@ function App() {
               />
             </div>
             {error && <p className="text-red-500 text-sm">{error}</p>}
-            <button
-              type="submit"
-              disabled={loading || !deviceName || password.length < 8}
-              className="w-full py-3 bg-primary text-white rounded-lg font-medium disabled:opacity-50"
-            >
-              {loading ? 'Creating...' : 'Create Vault'}
-            </button>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={goHome}
+                className="flex-1 py-3 border rounded-lg font-medium"
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                disabled={loading || !deviceName || password.length < 8 || !newVaultName.trim()}
+                className="flex-1 py-3 bg-primary text-white rounded-lg font-medium disabled:opacity-50"
+              >
+                {loading ? 'Creating...' : 'Create Vault'}
+              </button>
+            </div>
           </form>
         </div>
       </div>
     );
   }
 
-  // Unlock screen
-  if (!unlocked) {
+  // Unlock Screen
+  if (view === 'unlock') {
     return (
       <div className="min-h-screen bg-background-light dark:bg-background-dark flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="text-6xl mb-4">Password Manager</div>
-            <h1 className="text-2xl font-bold">Password Manager</h1>
-            <p className="text-gray-500 mt-2">Unlock your vault</p>
+            <h1 className="text-2xl font-bold">Unlock Vault</h1>
+            <p className="text-gray-500 mt-2">
+              {selectedVault ? `Unlock "${selectedVault}"` : 'Unlock your vault'}
+            </p>
           </div>
-
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Vault</label>
-            <select
-              value={activeVault}
-              onChange={(e) => switchVault(e.target.value)}
-              className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
-            >
-              {vaults.filter(v => v.initialized).map(v => (
-                <option key={v.name} value={v.name}>{v.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {vaults.filter(v => !v.initialized).length > 0 && (
-            <div className="mb-4">
-              <p className="text-sm text-gray-500 mb-2">Uninitialized vaults:</p>
-              {vaults.filter(v => !v.initialized).map(v => (
-                <button
-                  key={v.name}
-                  onClick={() => handleSwitchToUninitializedVault(v.name)}
-                  className="w-full py-2 mb-2 border rounded text-sm"
-                >
-                  Set up "{v.name}" vault
-                </button>
-              ))}
-            </div>
-          )}
 
           <form onSubmit={handleUnlock} className="space-y-4">
             <div>
+              <label className="block text-sm font-medium mb-1">Master Password</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Master password"
+                placeholder="Enter your master password"
                 className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
                 autoFocus
+                required
               />
             </div>
             {error && <p className="text-red-500 text-sm">{error}</p>}
-            <button
-              type="submit"
-              disabled={loading || !password}
-              className="w-full py-3 bg-primary text-white rounded-lg font-medium disabled:opacity-50"
-            >
-              {loading ? 'Unlocking...' : 'Unlock'}
-            </button>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={goHome}
+                className="flex-1 py-3 border rounded-lg font-medium"
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                disabled={loading || !password}
+                className="flex-1 py-3 bg-primary text-white rounded-lg font-medium disabled:opacity-50"
+              >
+                {loading ? 'Unlocking...' : 'Unlock'}
+              </button>
+            </div>
           </form>
         </div>
       </div>
     );
   }
 
-  // Main app
+  // Main App Screen
   return (
     <div className="min-h-screen bg-background-light dark:bg-background-dark">
-      {showCreateVault && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-surface-dark p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold mb-4">Create New Vault</h2>
-            <input
-              type="text"
-              value={newVaultName}
-              onChange={(e) => setNewVaultName(e.target.value)}
-              placeholder="Vault name (e.g., work, personal)"
-              className="w-full px-4 py-2 mb-4 rounded-lg border dark:bg-gray-700"
-              autoFocus
-            />
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setShowCreateVault(false)}
-                className="px-4 py-2 border rounded"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateVault}
-                disabled={!newVaultName.trim() || loading}
-                className="px-4 py-2 bg-primary text-white rounded disabled:opacity-50"
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <header className="flex items-center justify-between p-4 bg-white dark:bg-surface-dark border-b">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold">Password Manager</h1>
-          <select
-            value={activeVault}
-            onChange={(e) => switchVault(e.target.value)}
-            className="px-2 py-1 text-sm border rounded dark:bg-gray-700"
-          >
-            {vaults.map(v => (
-              <option key={v.name} value={v.name}>
-                {v.name} {v.initialized ? '' : '(not initialized)'}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={() => setShowCreateVault(true)}
-            className="px-2 py-1 text-sm border rounded"
-            title="Create new vault"
-          >
-            + New
-          </button>
+          <span className="text-sm text-gray-500">{activeVault}</span>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={goHome}
+            className="px-3 py-1 text-sm border rounded"
+          >
+            Switch Vault
+          </button>
           <button
             onClick={lock}
             className="px-3 py-1 text-sm border rounded"
