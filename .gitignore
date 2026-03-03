@@ -1,6 +1,6 @@
 # Binaries
 pwman
-pwman-server
+/pwman-server
 /server
 dist/
 
