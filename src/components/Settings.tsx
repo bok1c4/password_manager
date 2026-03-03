@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { useVault } from '../hooks/useVault';
 
 export function Settings() {
-  const { devices, syncStatus, lock, syncNow, syncPull, syncPush, initSync, p2pStatus, peers, approvals, startP2P, stopP2P, connectPeer, disconnectPeer, fetchP2PStatus, fetchPeers, fetchApprovals, approveDevice, rejectDevice } = useVault();
-  const [showInitSync, setShowInitSync] = useState(false);
-  const [remoteUrl, setRemoteUrl] = useState('');
+  const { devices, p2pStatus, peers, approvals, startP2P, stopP2P, connectPeer, disconnectPeer, fetchP2PStatus, fetchPeers, fetchApprovals, approveDevice, rejectDevice, pairingGenerate, pairingJoin, p2pSync } = useVault();
+  const [showPairing, setShowPairing] = useState<'generate' | 'join' | null>(null);
+  const [pairingCode, setPairingCode] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [deviceName, setDeviceName] = useState('New Device');
   const [connectAddress, setConnectAddress] = useState('');
 
   useEffect(() => {
@@ -20,11 +22,22 @@ export function Settings() {
     return () => clearInterval(interval);
   }, [p2pStatus.running]);
 
-  const handleInitSync = async () => {
-    if (remoteUrl) {
-      await initSync(remoteUrl);
-      setShowInitSync(false);
-      setRemoteUrl('');
+  const handleGeneratePairing = async () => {
+    try {
+      const result = await pairingGenerate();
+      setPairingCode(result.code);
+    } catch (e) {
+      console.error('Failed to generate pairing:', e);
+    }
+  };
+
+  const handleJoinVault = async () => {
+    try {
+      await pairingJoin(joinCode, deviceName);
+      setJoinCode('');
+      setShowPairing(null);
+    } catch (e) {
+      console.error('Failed to join vault:', e);
     }
   };
 
@@ -33,6 +46,10 @@ export function Settings() {
       await connectPeer(connectAddress);
       setConnectAddress('');
     }
+  };
+
+  const handleSync = async () => {
+    await p2pSync(false);
   };
 
   return (
@@ -60,6 +77,81 @@ export function Settings() {
               )}
             </div>
           ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-bold mb-3">Add Device</h2>
+        <div className="p-3 bg-white dark:bg-surface-dark rounded space-y-3">
+          {!showPairing ? (
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowPairing('generate')}
+                className="flex-1 px-3 py-2 bg-primary text-white rounded text-sm"
+              >
+                Generate Code
+              </button>
+              <button
+                onClick={() => setShowPairing('join')}
+                className="flex-1 px-3 py-2 bg-secondary text-white rounded text-sm"
+              >
+                Join Vault
+              </button>
+            </div>
+          ) : showPairing === 'generate' ? (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500">Share this code with your other device</p>
+              {pairingCode ? (
+                <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded text-center">
+                  <p className="text-2xl font-mono font-bold">{pairingCode}</p>
+                  <p className="text-xs text-gray-500 mt-2">Code expires in 5 minutes</p>
+                </div>
+              ) : (
+                <button
+                  onClick={handleGeneratePairing}
+                  className="w-full px-3 py-2 bg-primary text-white rounded text-sm"
+                >
+                  Generate Pairing Code
+                </button>
+              )}
+              <button
+                onClick={() => { setShowPairing(null); setPairingCode(''); }}
+                className="w-full px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                placeholder="Enter pairing code"
+                className="w-full px-3 py-2 rounded border dark:bg-gray-700 dark:border-gray-600 text-sm"
+              />
+              <input
+                type="text"
+                value={deviceName}
+                onChange={(e) => setDeviceName(e.target.value)}
+                placeholder="Device name"
+                className="w-full px-3 py-2 rounded border dark:bg-gray-700 dark:border-gray-600 text-sm"
+              />
+              <button
+                onClick={handleJoinVault}
+                disabled={!joinCode}
+                className="w-full px-3 py-2 bg-primary text-white rounded text-sm disabled:opacity-50"
+              >
+                Join Vault
+              </button>
+              <button
+                onClick={() => { setShowPairing(null); setJoinCode(''); }}
+                className="w-full px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -136,7 +228,7 @@ export function Settings() {
                   <div className="space-y-2">
                     {approvals.map((approval) => (
                       <div key={approval.device_id} className="p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded">
-                        <p className="text-sm font-medium">{approval.name}</p>
+                        <p className="text-sm font-medium">{approval.name || 'Unknown'}</p>
                         <p className="text-xs text-gray-500">{approval.fingerprint}</p>
                         <div className="flex gap-2 mt-2">
                           <button
@@ -157,75 +249,14 @@ export function Settings() {
                   </div>
                 </div>
               )}
-            </>
-          )}
-        </div>
-      </section>
 
-      <section>
-        <h2 className="text-lg font-bold mb-3">Sync</h2>
-        <div className="p-3 bg-white dark:bg-surface-dark rounded space-y-3">
-          <p>Status: {syncStatus.initialized ? 'Connected' : 'Not configured'}</p>
-          {syncStatus.last_sync && (
-            <p className="text-sm text-gray-500">
-              Last sync: {new Date(syncStatus.last_sync).toLocaleString()}
-            </p>
-          )}
-          
-          {syncStatus.initialized ? (
-            <div className="flex gap-2">
               <button
-                onClick={syncPull}
-                className="px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
-              >
-                Pull
-              </button>
-              <button
-                onClick={syncPush}
-                className="px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
-              >
-                Push
-              </button>
-              <button
-                onClick={syncNow}
-                className="px-3 py-2 bg-primary text-white rounded text-sm"
+                onClick={handleSync}
+                className="w-full px-3 py-2 bg-primary text-white rounded text-sm"
               >
                 Sync Now
               </button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {!showInitSync ? (
-                <button
-                  onClick={() => setShowInitSync(true)}
-                  className="px-3 py-2 bg-primary text-white rounded text-sm"
-                >
-                  Initialize Sync
-                </button>
-              ) : (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={remoteUrl}
-                    onChange={(e) => setRemoteUrl(e.target.value)}
-                    placeholder="git@github.com:user/repo.git"
-                    className="flex-1 px-3 py-2 rounded border dark:bg-gray-700 dark:border-gray-600 text-sm"
-                  />
-                  <button
-                    onClick={handleInitSync}
-                    className="px-3 py-2 bg-primary text-white rounded text-sm"
-                  >
-                    Init
-                  </button>
-                  <button
-                    onClick={() => setShowInitSync(false)}
-                    className="px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
+            </>
           )}
         </div>
       </section>
@@ -233,7 +264,7 @@ export function Settings() {
       <section>
         <h2 className="text-lg font-bold mb-3">Security</h2>
         <button
-          onClick={lock}
+          onClick={() => useVault.getState().lock()}
           className="w-full px-4 py-2 bg-red-500 text-white rounded"
         >
           Lock Vault
