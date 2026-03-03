@@ -218,5 +218,117 @@ func init() {
 	p2pCmd.AddCommand(p2pRejectCmd)
 	p2pCmd.AddCommand(p2pSyncCmd)
 
+	p2pCmd.AddCommand(pairingGenerateCmd)
+	p2pCmd.AddCommand(pairingJoinCmd)
+	p2pCmd.AddCommand(pairingStatusCmd)
+
 	AddCommand(p2pCmd)
+}
+
+var pairingGenerateCmd = &cobra.Command{
+	Use:   "generate",
+	Short: "Generate a pairing code to add a new device",
+	Run: func(cmd *cobra.Command, args []string) {
+		resp, err := http.Post(apiBase+"/pairing/generate", "application/json", nil)
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to connect: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		if resp.StatusCode != 200 {
+			errMsg := "unknown error"
+			if e, ok := result["error"].(string); ok {
+				errMsg = e
+			}
+			if e, ok := result["data"].(map[string]interface{}); ok {
+				if msg, ok := e["message"].(string); ok {
+					errMsg = msg
+				}
+			}
+			fmt.Printf("[ERROR] %s\n", errMsg)
+			return
+		}
+
+		data, _ := result["data"].(map[string]interface{})
+		code, _ := data["code"].(string)
+		deviceName, _ := data["device_name"].(string)
+		expiresIn, _ := data["expires_in"].(float64)
+
+		fmt.Printf("[INFO] Pairing code: %s\n", code)
+		fmt.Printf("[INFO] Device: %s\n", deviceName)
+		fmt.Printf("[INFO] Expires in: %.0f seconds\n", expiresIn)
+		fmt.Printf("\n[INFO] Share this code with your other device\n")
+	},
+}
+
+var pairingJoinCmd = &cobra.Command{
+	Use:   "join <code>",
+	Short: "Join a vault using a pairing code",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		body := map[string]string{
+			"code":        args[0],
+			"device_name": "New Device",
+		}
+		jsonBody, _ := json.Marshal(body)
+		resp, err := http.Post(apiBase+"/pairing/join", "application/json", bytes.NewBuffer(jsonBody))
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to connect: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		if resp.StatusCode != 200 {
+			errMsg := "unknown error"
+			if e, ok := result["error"].(string); ok {
+				errMsg = e
+			}
+			fmt.Printf("[ERROR] %s\n", errMsg)
+			return
+		}
+
+		data, _ := result["data"].(map[string]interface{})
+		deviceName, _ := data["device_name"].(string)
+
+		fmt.Printf("[INFO] Successfully joined vault from: %s\n", deviceName)
+		fmt.Printf("[INFO] Syncing passwords...\n")
+	},
+}
+
+var pairingStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Check pairing status",
+	Run: func(cmd *cobra.Command, args []string) {
+		resp, err := http.Get(apiBase + "/pairing/status")
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to connect: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		data, _ := result["data"].(map[string]interface{})
+		active, _ := data["active"].(bool)
+
+		if !active {
+			fmt.Printf("[INFO] No active pairing session\n")
+			return
+		}
+
+		deviceName, _ := data["device_name"].(string)
+		expiresIn, _ := data["expires_in"].(float64)
+
+		fmt.Printf("[INFO] Active pairing session\n")
+		fmt.Printf("[INFO] Device: %s\n", deviceName)
+		fmt.Printf("[INFO] Expires in: %.0f seconds\n", expiresIn)
+	},
 }
