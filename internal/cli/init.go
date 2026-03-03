@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"syscall"
 
@@ -112,6 +115,8 @@ var initCmd = &cobra.Command{
 	},
 }
 
+var unlockPassword string
+
 var unlockCmd = &cobra.Command{
 	Use:   "unlock",
 	Short: "Unlock the vault",
@@ -122,10 +127,29 @@ var unlockCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		password := getPassword("Enter vault password: ")
+		password := unlockPassword
+		if password == "" {
+			password = getPassword("Enter vault password: ")
+		}
 
-		if err := device.ValidatePassword(password); err != nil {
-			fmt.Println("[ERROR] Wrong password")
+		unlockReq := map[string]string{"password": password}
+		body, _ := json.Marshal(unlockReq)
+		resp, err := http.Post(apiBase+"/unlock", "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			fmt.Printf("[ERROR] Could not connect to server: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		if result["success"] != true {
+			errMsg := "unknown error"
+			if e, ok := result["error"].(string); ok {
+				errMsg = e
+			}
+			fmt.Printf("[ERROR] %s\n", errMsg)
 			os.Exit(1)
 		}
 
@@ -147,6 +171,8 @@ func init() {
 	initCmd.Flags().StringVar(&initVault, "vault", "", "Vault name (e.g., 'work', 'personal')")
 	initCmd.MarkFlagRequired("name")
 	AddCommand(initCmd)
+
+	unlockCmd.Flags().StringVarP(&unlockPassword, "password", "p", "", "Vault password")
 	AddCommand(unlockCmd)
 	AddCommand(lockCmd)
 }
