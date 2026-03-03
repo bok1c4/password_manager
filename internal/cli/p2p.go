@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -239,7 +240,8 @@ var pairingGenerateCmd = &cobra.Command{
 		var result map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&result)
 
-		if resp.StatusCode != 200 {
+		success, _ := result["success"].(bool)
+		if !success {
 			errMsg := "unknown error"
 			if e, ok := result["error"].(string); ok {
 				errMsg = e
@@ -250,6 +252,9 @@ var pairingGenerateCmd = &cobra.Command{
 				}
 			}
 			fmt.Printf("[ERROR] %s\n", errMsg)
+			if errMsg == "vault_locked" || strings.Contains(errMsg, "vault") {
+				fmt.Printf("[INFO] Run 'pwman unlock' first to unlock your vault\n")
+			}
 			return
 		}
 
