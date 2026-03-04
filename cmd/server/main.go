@@ -338,6 +338,27 @@ func handleUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	device, _ := db.GetDevice(vaultConfig.DeviceID)
+	if device == nil {
+		pubKeyPath := config.PublicKeyPathForVault(activeVault)
+		pubKeyBytes, _ := os.ReadFile(pubKeyPath)
+		pubKey, _ := crypto.LoadPublicKey(pubKeyPath)
+		device = &models.Device{
+			ID:          vaultConfig.DeviceID,
+			Name:        vaultConfig.DeviceName,
+			PublicKey:   string(pubKeyBytes),
+			Fingerprint: crypto.GetFingerprint(pubKey),
+			Trusted:     true,
+			CreatedAt:   time.Now(),
+		}
+		db.UpsertDevice(device)
+	} else if device.PublicKey == "" {
+		pubKeyPath := config.PublicKeyPathForVault(activeVault)
+		pubKeyBytes, _ := os.ReadFile(pubKeyPath)
+		device.PublicKey = string(pubKeyBytes)
+		db.UpsertDevice(device)
+	}
+
 	vault = &Vault{
 		privateKey: &crypto.KeyPair{PrivateKey: privateKey},
 		storage:    db,
@@ -448,6 +469,9 @@ func handleAddEntry(w http.ResponseWriter, r *http.Request) {
 	getPublicKey := func(fingerprint string) (*rsa.PublicKey, error) {
 		for _, d := range trustedDevices {
 			if d.Fingerprint == fingerprint {
+				if strings.HasPrefix(d.PublicKey, "-----BEGIN") {
+					return crypto.ParsePublicKey(d.PublicKey)
+				}
 				return crypto.LoadPublicKey(d.PublicKey)
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,6 +282,9 @@ func AddEntry(site, username, password, notes string) string {
 	getPublicKey := func(fingerprint string) (*rsa.PublicKey, error) {
 		for _, d := range trustedDevices {
 			if d.Fingerprint == fingerprint {
+				if strings.HasPrefix(d.PublicKey, "-----BEGIN") {
+					return crypto.ParsePublicKey(d.PublicKey)
+				}
 				return crypto.LoadPublicKey(d.PublicKey)
 			}
 		}
