@@ -195,6 +195,14 @@ func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
 }
 
 func (p *P2PManager) HandlePeerFound(info peer.AddrInfo) {
+	fmt.Printf("[P2P] Peer discovered via mDNS: %s with addresses: %v\n", info.ID, info.Addrs)
+
+	if len(info.Addrs) == 0 {
+		fmt.Printf("[P2P] WARNING: No addresses in peer info for %s\n", info.ID)
+	}
+
+	p.host.Peerstore().AddAddrs(info.ID, info.Addrs, 30*time.Minute)
+
 	p.mu.Lock()
 	p.peers[info.ID.String()] = PeerInfo{
 		ID:        info.ID.String(),
