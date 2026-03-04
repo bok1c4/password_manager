@@ -3,7 +3,7 @@ import { useVault } from './hooks/useVault';
 import { PasswordList } from './components/PasswordList';
 import { Settings } from './components/Settings';
 
-type View = 'home' | 'init' | 'unlock' | 'app';
+type View = 'home' | 'init' | 'unlock' | 'join' | 'app';
 
 function App() {
   const {
@@ -18,7 +18,8 @@ function App() {
     lock,
     switchVault,
     deleteVault,
-    clearError
+    clearError,
+    pairingJoin
   } = useVault();
   
   const [password, setPassword] = useState('');
@@ -28,6 +29,10 @@ function App() {
   const [view, setView] = useState<View>('home');
   const [selectedVault, setSelectedVault] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState('');
+  const [joinDeviceName, setJoinDeviceName] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
 
   useEffect(() => {
     checkInitialized();
@@ -85,7 +90,35 @@ function App() {
     setView('home');
     setSelectedVault(null);
     setPassword('');
+    setJoinError('');
     clearError();
+  };
+
+  const openJoin = () => {
+    setPairingCode('');
+    setJoinDeviceName('');
+    setJoinError('');
+    setView('join');
+  };
+
+  const handleJoinVault = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pairingCode.trim() || !joinDeviceName.trim()) return;
+
+    setIsJoining(true);
+    setJoinError('');
+    try {
+      await pairingJoin(pairingCode.trim().toUpperCase(), joinDeviceName.trim());
+      // Join successful - the vault should now be in the list
+      await checkInitialized();
+      setView('home');
+      setPairingCode('');
+      setJoinDeviceName('');
+    } catch (e: any) {
+      setJoinError(e.toString());
+    } finally {
+      setIsJoining(false);
+    }
   };
 
   // Home Screen - List all vaults
@@ -160,6 +193,15 @@ function App() {
           >
             <span className="text-xl">+</span>
             Create New Vault
+          </button>
+
+          {/* Join Vault Button */}
+          <button
+            onClick={openJoin}
+            className="w-full py-4 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-500 hover:border-green-500 hover:text-green-600 transition flex items-center justify-center gap-2 mt-3"
+          >
+            <span className="text-xl">🔗</span>
+            Join Existing Vault
           </button>
 
           {/* Delete Confirmation Modal */}
@@ -309,6 +351,64 @@ function App() {
                 className="flex-1 py-3 bg-primary text-white rounded-lg font-medium disabled:opacity-50"
               >
                 {loading ? 'Unlocking...' : 'Unlock'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Join Vault Screen
+  if (view === 'join') {
+    return (
+      <div className="min-h-screen bg-background-light dark:bg-background-dark flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <h1 className="text-2xl font-bold">Join Vault</h1>
+            <p className="text-gray-500 mt-2">
+              Enter the pairing code from another device
+            </p>
+          </div>
+
+          <form onSubmit={handleJoinVault} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Pairing Code</label>
+              <input
+                type="text"
+                value={pairingCode}
+                onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
+                placeholder="ABC-DEF-GHI"
+                className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700 text-center text-lg tracking-wider font-mono"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Device Name</label>
+              <input
+                type="text"
+                value={joinDeviceName}
+                onChange={(e) => setJoinDeviceName(e.target.value)}
+                placeholder="Device name (e.g., Laptop, Phone)"
+                className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
+                required
+              />
+            </div>
+            {joinError && <p className="text-red-500 text-sm">{joinError}</p>}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={goHome}
+                className="flex-1 py-3 border rounded-lg font-medium"
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                disabled={isJoining || !pairingCode.trim() || !joinDeviceName.trim()}
+                className="flex-1 py-3 bg-green-600 text-white rounded-lg font-medium disabled:opacity-50"
+              >
+                {isJoining ? 'Joining...' : 'Join Vault'}
               </button>
             </div>
           </form>
