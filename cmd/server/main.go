@@ -2107,13 +2107,17 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 		response = p2p.PairingResponsePayload{Success: false, Error: "invalid_code"}
 	} else if time.Now().After(code.ExpiresAt) {
 		response = p2p.PairingResponsePayload{Success: false, Error: "code_expired"}
-	} else if code.Used {
-		response = p2p.PairingResponsePayload{Success: false, Error: "code_already_used"}
 	} else {
-		pairingLock.Lock()
-		code.Used = true
-		pairingCodes[pairingReq.Code] = code
-		pairingLock.Unlock()
+		// Check if this is a re-pairing attempt from the same device
+		// Allow re-pairing if the device already exists (for updating public key)
+		isRePairing := code.Used
+
+		if !isRePairing {
+			pairingLock.Lock()
+			code.Used = true
+			pairingCodes[pairingReq.Code] = code
+			pairingLock.Unlock()
+		}
 
 		// Add joiner as trusted device using info from the REQUEST (not from stored code)
 		// Compute fingerprint from public key
@@ -2139,6 +2143,20 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 			}
 			vault.storage.UpsertDevice(&device)
 			log.Printf("[Pairing] Added joiner %s as trusted device (fingerprint: %s)", pairingReq.DeviceName, joinerFingerprint)
+
+			// FIX: Also update our own device with public key if it's empty
+			if vault.cfg != nil {
+				selfDevice, _ := vault.storage.GetDevice(vault.cfg.DeviceID)
+				if selfDevice != nil && selfDevice.PublicKey == "" {
+					pubKeyPath := config.PublicKeyPathForVault(vault.vaultName)
+					if pubKeyBytes, err := os.ReadFile(pubKeyPath); err == nil {
+						selfDevice.PublicKey = string(pubKeyBytes)
+						selfDevice.Fingerprint = crypto.GetFingerprint(vault.privateKey.PublicKey)
+						vault.storage.UpsertDevice(selfDevice)
+						log.Printf("[Pairing] Updated own device with public key")
+					}
+				}
+			}
 
 			// Only re-encrypt if joiner provided a public key
 			if pairingReq.PublicKey != "" {
