@@ -1663,18 +1663,37 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			// Need to create vault from scratch
 			log.Printf("[Pairing Join] Creating vault '%s' from scratch...", vaultName)
 
-			// Set as active vault
-			if err := config.SetActiveVault(vaultName); err != nil {
-				log.Printf("[Pairing Join] Failed to set active vault: %v", err)
-			}
-
-			// Create vault directory
+			// Create vault directory FIRST
 			vaultPath := config.VaultPath(vaultName)
 			if err := os.MkdirAll(vaultPath, 0700); err != nil {
 				log.Printf("[Pairing Join] Failed to create vault directory: %v", err)
 				vaultLock.Unlock()
 				jsonResponse(w, Response{Success: false, Error: "failed to create vault: " + err.Error()})
 				return
+			}
+
+			// Add vault to global config BEFORE setting as active
+			globalCfg, err := config.LoadGlobalConfig()
+			if err != nil {
+				globalCfg = &config.GlobalConfig{}
+			}
+			found := false
+			for _, v := range globalCfg.Vaults {
+				if v == vaultName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				globalCfg.Vaults = append(globalCfg.Vaults, vaultName)
+				if err := globalCfg.Save(); err != nil {
+					log.Printf("[Pairing Join] Failed to save global config: %v", err)
+				}
+			}
+
+			// Set as active vault (now that it's in config)
+			if err := config.SetActiveVault(vaultName); err != nil {
+				log.Printf("[Pairing Join] Failed to set active vault: %v", err)
 			}
 
 			// Generate new key pair for this device
@@ -2418,6 +2437,13 @@ func handleJoinerSyncData(msg p2p.ReceivedMessage) {
 	}
 
 	for _, deviceData := range syncData.Devices {
+		// Check if device already exists to avoid duplicates
+		existingDevice, _ := vault.storage.GetDevice(deviceData.ID)
+		if existingDevice != nil {
+			log.Printf("[Sync] Device already exists: %s", deviceData.Name)
+			continue
+		}
+
 		device := models.Device{
 			ID:          deviceData.ID,
 			Name:        deviceData.Name,
