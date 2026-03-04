@@ -270,9 +270,11 @@ func AddEntry(site, username, password, notes string) string {
 
 	if len(trustedDevices) == 0 {
 		pubKey := &vault.privateKey.PublicKey
+		activeVault, _ := config.GetActiveVault()
 		trustedDevices = append(trustedDevices, models.Device{
 			ID:          vault.cfg.DeviceID,
 			Fingerprint: crypto.GetFingerprint(pubKey),
+			PublicKey:   config.PublicKeyPathForVault(activeVault),
 		})
 	}
 
