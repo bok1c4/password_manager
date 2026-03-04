@@ -8,6 +8,11 @@ import (
 	"runtime"
 )
 
+var (
+	// OverrideBasePath allows testing with different vault directories
+	OverrideBasePath = os.Getenv("PWMAN_BASE_PATH")
+)
+
 type GlobalConfig struct {
 	ActiveVault string   `json:"active_vault"`
 	Vaults      []string `json:"vaults"`
@@ -24,6 +29,9 @@ var (
 )
 
 func DefaultBasePath() string {
+	if OverrideBasePath != "" {
+		return OverrideBasePath
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."

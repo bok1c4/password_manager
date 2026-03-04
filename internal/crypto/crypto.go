@@ -67,9 +67,16 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read public key: %w", err)
 	}
-	block, _ := pem.Decode(data)
+	return ParsePublicKey(string(data))
+}
+
+func ParsePublicKey(pemContent string) (*rsa.PublicKey, error) {
+	if pemContent == "" {
+		return nil, fmt.Errorf("empty PEM content")
+	}
+	block, _ := pem.Decode([]byte(pemContent))
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block")
+		return nil, fmt.Errorf("failed to decode PEM block: content starts with %s", pemContent[:min(50, len(pemContent))])
 	}
 	return x509.ParsePKCS1PublicKey(block.Bytes)
 }

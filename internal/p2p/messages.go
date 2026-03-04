@@ -65,6 +65,7 @@ type EntryData struct {
 type DeviceData struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
 	Trusted     bool   `json:"trusted"`
 	CreatedAt   int64  `json:"created_at"`
@@ -172,11 +173,12 @@ func CreateRejectDeviceMessage(deviceID, reason string) (*Message, error) {
 	return NewMessage(MsgTypeRejectDevice, payload)
 }
 
-func CreatePairingRequestMessage(code, deviceID, deviceName, password string) (*Message, error) {
+func CreatePairingRequestMessage(code, deviceID, deviceName, publicKey, password string) (*Message, error) {
 	payload := PairingRequestPayload{
 		Code:       code,
 		DeviceID:   deviceID,
 		DeviceName: deviceName,
+		PublicKey:  publicKey,
 		Password:   password,
 	}
 	return NewMessage(MsgTypePairingRequest, payload)
@@ -213,6 +215,7 @@ type PairingRequestPayload struct {
 	Code       string `json:"code"`
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
+	PublicKey  string `json:"public_key"`         // Joiner's public key for re-encryption
 	Password   string `json:"password,omitempty"` // Vault password for verification
 }
 
