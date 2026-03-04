@@ -653,6 +653,30 @@ func handleGetPassword(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[GetPassword] Trying to decrypt entry %s with vault's private key (fingerprint available: %v)", entry.ID, vault.privateKey != nil)
 
+	// Debug: Log what's in EncryptedAESKeys
+	if entry.EncryptedAESKeys != nil {
+		log.Printf("[GetPassword] Entry has %d encrypted keys: %v", len(entry.EncryptedAESKeys), func() []string {
+			keys := []string{}
+			for k := range entry.EncryptedAESKeys {
+				keys = append(keys, k[:min(20, len(k))]+"...")
+			}
+			return keys
+		}())
+	}
+
+	// Get our fingerprint to check if we have a key
+	ourFingerprint := crypto.GetFingerprint(vault.privateKey.PublicKey)
+	log.Printf("[GetPassword] Our device fingerprint: %s...", ourFingerprint[:min(20, len(ourFingerprint))])
+
+	hasKey := false
+	for fp := range entry.EncryptedAESKeys {
+		if fp == ourFingerprint {
+			hasKey = true
+			break
+		}
+	}
+	log.Printf("[GetPassword] Have encrypted key for this device: %v", hasKey)
+
 	password, err := crypto.HybridDecrypt(entry, vault.privateKey.PrivateKey)
 	if err != nil {
 		log.Printf("[GetPassword] Decryption failed: %v", err)
@@ -2285,8 +2309,16 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 	devices, _ := vault.storage.ListDevices()
 	log.Printf("[Sync] Found %d entries, %d devices", len(entries), len(devices))
 
-	deviceList := make([]p2p.DeviceData, len(devices))
-	for i, d := range devices {
+	// Deduplicate devices by ID
+	seen := make(map[string]bool)
+	deviceList := []p2p.DeviceData{}
+	for _, d := range devices {
+		if seen[d.ID] {
+			log.Printf("[Sync] Skipping duplicate device: %s", d.Name)
+			continue
+		}
+		seen[d.ID] = true
+
 		publicKey := d.PublicKey
 		// If stored public key looks like a file path, read from file
 		if len(publicKey) > 0 && publicKey[0] == '/' {
@@ -2297,18 +2329,23 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 				publicKey = string(pubKeyBytes)
 			}
 		}
-		deviceList[i] = p2p.DeviceData{
+		deviceList = append(deviceList, p2p.DeviceData{
 			ID:          d.ID,
 			Name:        d.Name,
 			PublicKey:   publicKey,
 			Fingerprint: d.Fingerprint,
 			Trusted:     d.Trusted,
 			CreatedAt:   d.CreatedAt.UnixMilli(),
-		}
+		})
 	}
 
 	entryData := make([]p2p.EntryData, len(entries))
 	for i, e := range entries {
+		log.Printf("[Sync] Sending entry: site=%s, username=%s, has %d encrypted keys",
+			e.Site, e.Username, len(e.EncryptedAESKeys))
+		for fp := range e.EncryptedAESKeys {
+			log.Printf("[Sync]   - key for: %s...", fp[:min(20, len(fp))])
+		}
 		entryData[i] = p2p.EntryData{
 			ID:                e.ID,
 			Site:              e.Site,
