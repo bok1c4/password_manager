@@ -2145,7 +2145,7 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 			log.Printf("[Pairing] Added joiner %s as trusted device (fingerprint: %s)", pairingReq.DeviceName, joinerFingerprint)
 
 			// FIX: Also update our own device with public key if it's empty
-			if vault.cfg != nil && vault.privateKey != nil {
+			if vault.cfg != nil && vault.privateKey != nil && vault.privateKey.PublicKey != nil {
 				selfDevice, _ := vault.storage.GetDevice(vault.cfg.DeviceID)
 				if selfDevice != nil && selfDevice.PublicKey == "" {
 					pubKeyPath := config.PublicKeyPathForVault(vault.vaultName)
@@ -2222,7 +2222,7 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 	}
 
 	// FIX: Also update our own device with public key before sending
-	if vault.cfg != nil && vault.privateKey != nil {
+	if vault.cfg != nil && vault.privateKey != nil && vault.privateKey.PublicKey != nil {
 		selfDevice, _ := vault.storage.GetDevice(vault.cfg.DeviceID)
 		if selfDevice != nil {
 			pubKeyPath := config.PublicKeyPathForVault(vault.vaultName)
