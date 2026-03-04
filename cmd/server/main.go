@@ -1166,9 +1166,11 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 					log.Printf("[Sync] Received sync request from %s", msg.FromPeer)
 
 					vaultLock.Lock()
-					if vault != nil && vault.storage != nil {
+					log.Printf("[Sync] Checking vault: vault=%v, storage=%v, privateKey=%v", vault != nil, vault != nil && vault.storage != nil, vault != nil && vault.privateKey != nil)
+					if vault != nil && vault.storage != nil && vault.privateKey != nil {
 						entries, _ := vault.storage.ListEntries()
 						devices, _ := vault.storage.ListDevices()
+						log.Printf("[Sync] Found %d entries, %d devices", len(entries), len(devices))
 
 						deviceList := []p2p.DeviceData{}
 						for _, d := range devices {
@@ -1201,6 +1203,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						if err != nil {
 							log.Printf("[Sync] Failed to create sync message: %v", err)
 						} else {
+							log.Printf("[Sync] Sending sync data to %s", msg.FromPeer)
 							err = p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{
 								Type:    syncMsg.Type,
 								Payload: syncMsg.Payload,
@@ -1214,7 +1217,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						}
 					} else {
 						vaultLock.Unlock()
-						log.Printf("[Sync] Vault not unlocked, cannot respond to sync request")
+						log.Printf("[Sync] Cannot respond to sync request: vault not available")
 					}
 				}
 			}
