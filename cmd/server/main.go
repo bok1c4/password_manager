@@ -263,10 +263,16 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	device := models.Device{
 		ID:          deviceID,
 		Name:        req.Name,
-		PublicKey:   config.PublicKeyPathForVault(vaultName),
+		PublicKey:   "", // Will be loaded from file below
 		Fingerprint: crypto.GetFingerprint(keyPair.PublicKey),
 		Trusted:     true,
 		CreatedAt:   time.Now(),
+	}
+
+	// Read and store the actual public key content
+	pubKeyPath := config.PublicKeyPathForVault(vaultName)
+	if pubKeyBytes, err := os.ReadFile(pubKeyPath); err == nil {
+		device.PublicKey = string(pubKeyBytes)
 	}
 
 	if err := db.UpsertDevice(&device); err != nil {
