@@ -2221,6 +2221,20 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 		return
 	}
 
+	// FIX: Also update our own device with public key before sending
+	if vault.cfg != nil {
+		selfDevice, _ := vault.storage.GetDevice(vault.cfg.DeviceID)
+		if selfDevice != nil {
+			pubKeyPath := config.PublicKeyPathForVault(vault.vaultName)
+			if pubKeyBytes, err := os.ReadFile(pubKeyPath); err == nil {
+				selfDevice.PublicKey = string(pubKeyBytes)
+				selfDevice.Fingerprint = crypto.GetFingerprint(vault.privateKey.PublicKey)
+				vault.storage.UpsertDevice(selfDevice)
+				log.Printf("[Sync] Updated own device with public key before sync")
+			}
+		}
+	}
+
 	entries, _ := vault.storage.ListEntries()
 	devices, _ := vault.storage.ListDevices()
 	log.Printf("[Sync] Found %d entries, %d devices", len(entries), len(devices))
@@ -2230,6 +2244,7 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 		deviceList[i] = p2p.DeviceData{
 			ID:          d.ID,
 			Name:        d.Name,
+			PublicKey:   d.PublicKey,
 			Fingerprint: d.Fingerprint,
 			Trusted:     d.Trusted,
 			CreatedAt:   d.CreatedAt.UnixMilli(),
