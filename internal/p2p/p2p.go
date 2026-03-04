@@ -189,6 +189,12 @@ func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
 	case MsgTypeHello:
 		fmt.Printf("[P2P] Received HELLO from: %s\n", fromPeer)
 		p.messageChan <- msg
+	case MsgTypePairingRequest:
+		fmt.Printf("[P2P] Received PAIRING_REQUEST from: %s\n", fromPeer)
+		p.messageChan <- msg
+	case MsgTypePairingResponse:
+		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s\n", fromPeer)
+		p.messageChan <- msg
 	default:
 		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
 	}
