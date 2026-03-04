@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -217,16 +218,25 @@ func (p *P2PManager) startMDNS() error {
 func (p *P2PManager) handleStream(stream network.Stream) {
 	fmt.Println("[P2P] New stream handler called")
 
-	buf := make([]byte, 1024*1024)
+	reader := bufio.NewReader(stream)
 	for {
-		n, err := stream.Read(buf)
+		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			break
 		}
 
+		// Skip empty lines
+		if len(line) <= 1 {
+			continue
+		}
+
 		var msg SyncMessage
-		if err := json.Unmarshal(buf[:n], &msg); err != nil {
-			fmt.Printf("[P2P] Failed to parse message: %v\n", err)
+		if err := json.Unmarshal(line, &msg); err != nil {
+			var msgLen = len(line)
+			if msgLen > 50 {
+				msgLen = 50
+			}
+			fmt.Printf("[P2P] Failed to parse message: %v (data: %s)\n", err, string(line[:msgLen]))
 			continue
 		}
 
@@ -403,6 +413,9 @@ func (p *P2PManager) SendMessage(peerID string, msg SyncMessage) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
+
+	// Add newline delimiter
+	data = append(data, '\n')
 
 	_, err = stream.Write(data)
 	if err != nil {
