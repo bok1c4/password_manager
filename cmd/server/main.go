@@ -1218,6 +1218,74 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-start P2P if not running
+	p2pLock.Lock()
+	if p2pManager == nil || !p2pManager.IsRunning() {
+		p2pLock.Unlock()
+		// Start P2P automatically
+		deviceName := ""
+		deviceID := ""
+
+		vaultLock.Lock()
+		if vault != nil && vault.cfg != nil {
+			deviceName = vault.cfg.DeviceName
+			deviceID = vault.cfg.DeviceID
+		}
+		vaultLock.Unlock()
+
+		if deviceName == "" {
+			activeVault, _ := config.GetActiveVault()
+			if activeVault != "" {
+				vaultConfig, _ := config.LoadVaultConfig(activeVault)
+				if vaultConfig != nil && vaultConfig.DeviceID != "" {
+					deviceName = vaultConfig.DeviceName
+					deviceID = vaultConfig.DeviceID
+				}
+			}
+		}
+
+		cfg := p2p.P2PConfig{
+			DeviceName: deviceName,
+			DeviceID:   deviceID,
+		}
+
+		log.Printf("[Pairing] Auto-starting P2P for pairing...")
+		manager, err := p2p.NewP2PManager(cfg)
+		if err != nil {
+			log.Printf("[Pairing] Failed to auto-start P2P: %v", err)
+		} else {
+			if err := manager.Start(); err != nil {
+				log.Printf("[Pairing] Failed to start P2P: %v", err)
+			} else {
+				p2pManager = manager
+				go func() {
+					for {
+						select {
+						case peer := <-p2pManager.ConnectedChan():
+							log.Printf("[P2P] Auto: Received connected event: %s", peer.ID)
+							approvalsLock.Lock()
+							if _, exists := pendingApprovals[peer.ID]; !exists {
+								pendingApprovals[peer.ID] = PendingApproval{
+									DeviceID:    peer.ID,
+									DeviceName:  peer.Name,
+									Status:      "pending",
+									ConnectedAt: time.Now(),
+								}
+							}
+							approvalsLock.Unlock()
+						case peerID := <-p2pManager.DisconnectedChan():
+							log.Printf("[P2P] Auto: Peer disconnected: %s", peerID)
+						case msg := <-p2pManager.MessageChan():
+							log.Printf("[P2P] Auto: Message received: %s from %s", msg.Type, msg.PeerID)
+						}
+					}
+				}()
+			}
+		}
+	} else {
+		p2pLock.Unlock()
+	}
+
 	vaultLock.Lock()
 	deviceID := vault.cfg.DeviceID
 	deviceName := vault.cfg.DeviceName
@@ -1275,6 +1343,78 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-start P2P if not running (for the joining device)
+	p2pLock.Lock()
+	if p2pManager == nil || !p2pManager.IsRunning() {
+		p2pLock.Unlock()
+
+		// Get device info from vault config
+		deviceName := ""
+		deviceID := ""
+
+		vaultLock.Lock()
+		if vault != nil && vault.cfg != nil {
+			deviceName = vault.cfg.DeviceName
+			deviceID = vault.cfg.DeviceID
+		}
+		vaultLock.Unlock()
+
+		if deviceName == "" {
+			activeVault, _ := config.GetActiveVault()
+			if activeVault != "" {
+				vaultConfig, _ := config.LoadVaultConfig(activeVault)
+				if vaultConfig != nil && vaultConfig.DeviceID != "" {
+					deviceName = vaultConfig.DeviceName
+					deviceID = vaultConfig.DeviceID
+				}
+			}
+		}
+
+		cfg := p2p.P2PConfig{
+			DeviceName: deviceName,
+			DeviceID:   deviceID,
+		}
+
+		log.Printf("[Pairing Join] Auto-starting P2P...")
+		manager, err := p2p.NewP2PManager(cfg)
+		if err != nil {
+			log.Printf("[Pairing Join] Failed to auto-start P2P: %v", err)
+		} else {
+			if err := manager.Start(); err != nil {
+				log.Printf("[Pairing Join] Failed to start P2P: %v", err)
+			} else {
+				p2pManager = manager
+				go func() {
+					for {
+						select {
+						case peer := <-p2pManager.ConnectedChan():
+							log.Printf("[P2P] Join: Received connected event: %s", peer.ID)
+							approvalsLock.Lock()
+							if _, exists := pendingApprovals[peer.ID]; !exists {
+								pendingApprovals[peer.ID] = PendingApproval{
+									DeviceID:    peer.ID,
+									DeviceName:  peer.Name,
+									Status:      "pending",
+									ConnectedAt: time.Now(),
+								}
+							}
+							approvalsLock.Unlock()
+						case peerID := <-p2pManager.DisconnectedChan():
+							log.Printf("[P2P] Join: Peer disconnected: %s", peerID)
+						case msg := <-p2pManager.MessageChan():
+							log.Printf("[P2P] Join: Message received: %s from %s", msg.Type, msg.PeerID)
+						}
+					}
+				}()
+			}
+		}
+
+		// Wait a moment for P2P to start
+		time.Sleep(2 * time.Second)
+	} else {
+		p2pLock.Unlock()
+	}
+
 	var req PairingJoinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, Response{Success: false, Error: err.Error()})
@@ -1282,6 +1422,9 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Code = strings.ToUpper(strings.ReplaceAll(req.Code, "-", ""))
+
+	log.Printf("[Pairing Join] Looking for code: '%s' (normalized)", req.Code)
+	log.Printf("[Pairing Join] Available codes: %d", len(pairingCodes))
 
 	pairingLock.Lock()
 	code, exists := pairingCodes[req.Code]
