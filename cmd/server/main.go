@@ -1880,8 +1880,9 @@ func handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 
 func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerprint string) {
 	vaultLock.Lock()
+	defer vaultLock.Unlock()
+
 	if vault == nil || vault.storage == nil || vault.privateKey == nil {
-		vaultLock.Unlock()
 		log.Printf("[Sync] Cannot re-encrypt: vault not unlocked")
 		return
 	}
@@ -1889,7 +1890,6 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 	privateKey := vault.privateKey.PrivateKey
 	db := vault.storage
 	cfg := vault.cfg
-	vaultLock.Unlock()
 
 	log.Printf("[Sync] Starting re-encryption for device: %s (%s)", deviceName, deviceID)
 
