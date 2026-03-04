@@ -1,8 +1,10 @@
-# Binaries
+# Binaries and Build Artifacts
 pwman
-/pwman-server
-/server
+pwman-server
+server
 dist/
+src-tauri/target/
+build/
 
 # Go
 *.exe
@@ -12,8 +14,6 @@ dist/
 *.dylib
 *.test
 *.out
-
-# Go workspace
 go.work
 
 # Node
@@ -22,12 +22,7 @@ npm-debug.log*
 yarn-error.log
 yarn-debug.log*
 
-# Build outputs
-src-tauri/target/
-dist/
-build/
-
-# Environment
+# Environment Secrets
 .env
 .env.local
 .env.*.local
@@ -43,11 +38,11 @@ build/
 .DS_Store
 Thumbs.db
 
-# Test coverage
+# Test Coverage
 coverage.out
 coverage.html
 
-# Vault data (local only - NEVER commit!)
+# Vault Data (CRITICAL - NEVER COMMIT!)
 .pwman/
 *.db
 *.db-journal

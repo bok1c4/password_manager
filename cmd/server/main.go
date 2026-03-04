@@ -1616,6 +1616,66 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 									pairingResponseCh <- pairingResp
 								}
 							}
+
+							// Handle sync request (from joiner requesting full sync)
+							if msg.Type == p2p.MsgTypeRequestSync {
+								log.Printf("[Sync] Received sync request in handlePairingGenerate from %s", msg.FromPeer)
+
+								vaultLock.Lock()
+								log.Printf("[Sync] Checking vault: vault=%v, storage=%v, privateKey=%v", vault != nil, vault != nil && vault.storage != nil, vault != nil && vault.privateKey != nil)
+								if vault != nil && vault.storage != nil && vault.privateKey != nil {
+									entries, _ := vault.storage.ListEntries()
+									devices, _ := vault.storage.ListDevices()
+									log.Printf("[Sync] Found %d entries, %d devices", len(entries), len(devices))
+
+									deviceList := []p2p.DeviceData{}
+									for _, d := range devices {
+										deviceList = append(deviceList, p2p.DeviceData{
+											ID:          d.ID,
+											Name:        d.Name,
+											Fingerprint: d.Fingerprint,
+											Trusted:     d.Trusted,
+											CreatedAt:   d.CreatedAt.UnixMilli(),
+										})
+									}
+
+									entryData := []p2p.EntryData{}
+									for _, e := range entries {
+										entryData = append(entryData, p2p.EntryData{
+											ID:                e.ID,
+											Site:              e.Site,
+											Username:          e.Username,
+											EncryptedPassword: e.EncryptedPassword,
+											EncryptedAESKeys:  e.EncryptedAESKeys,
+											Notes:             e.Notes,
+											Version:           int(e.Version),
+											CreatedAt:         e.CreatedAt.UnixMilli(),
+											UpdatedAt:         e.UpdatedAt.UnixMilli(),
+										})
+									}
+									vaultLock.Unlock()
+
+									syncMsg, err := p2p.CreateSyncDataMessage(entryData, deviceList)
+									if err != nil {
+										log.Printf("[Sync] Failed to create sync message: %v", err)
+									} else {
+										log.Printf("[Sync] Sending sync data to %s", msg.FromPeer)
+										err = p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{
+											Type:    syncMsg.Type,
+											Payload: syncMsg.Payload,
+										})
+										if err != nil {
+											log.Printf("[Sync] Failed to send sync data: %v", err)
+										} else {
+											log.Printf("[Sync] Sent %d entries and %d devices to %s",
+												len(entryData), len(deviceList), msg.FromPeer)
+										}
+									}
+								} else {
+									vaultLock.Unlock()
+									log.Printf("[Sync] Cannot respond: vault not available")
+								}
+							}
 						}
 					}
 				}()

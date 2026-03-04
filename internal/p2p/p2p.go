@@ -38,17 +38,22 @@ type ReceivedMessage struct {
 }
 
 type P2PManager struct {
-	host           host.Host
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.RWMutex
-	peers          map[string]PeerInfo
-	deviceName     string
-	deviceID       string
-	messageChan    chan ReceivedMessage
-	discovery      mdns.Service
-	connectedCh    chan PeerInfo
-	disconnectedCh chan string
+	host        host.Host
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.RWMutex
+	peers       map[string]PeerInfo
+	deviceName  string
+	deviceID    string
+	messageChan chan ReceivedMessage
+	// Specialized channels for each message type
+	pairingRequestChan  chan ReceivedMessage
+	pairingResponseChan chan ReceivedMessage
+	syncRequestChan     chan ReceivedMessage
+	syncDataChan        chan ReceivedMessage
+	discovery           mdns.Service
+	connectedCh         chan PeerInfo
+	disconnectedCh      chan string
 }
 
 type P2PConfig struct {
@@ -62,14 +67,18 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &P2PManager{
-		ctx:            ctx,
-		cancel:         cancel,
-		peers:          make(map[string]PeerInfo),
-		deviceName:     cfg.DeviceName,
-		deviceID:       cfg.DeviceID,
-		messageChan:    make(chan ReceivedMessage, 100),
-		connectedCh:    make(chan PeerInfo, 10),
-		disconnectedCh: make(chan string, 10),
+		ctx:                 ctx,
+		cancel:              cancel,
+		peers:               make(map[string]PeerInfo),
+		deviceName:          cfg.DeviceName,
+		deviceID:            cfg.DeviceID,
+		messageChan:         make(chan ReceivedMessage, 100),
+		pairingRequestChan:  make(chan ReceivedMessage, 10),
+		pairingResponseChan: make(chan ReceivedMessage, 10),
+		syncRequestChan:     make(chan ReceivedMessage, 10),
+		syncDataChan:        make(chan ReceivedMessage, 10),
+		connectedCh:         make(chan PeerInfo, 10),
+		disconnectedCh:      make(chan string, 10),
 	}
 
 	if cfg.DeviceID == "" {
@@ -143,7 +152,50 @@ func (p *P2PManager) Start() error {
 	fmt.Printf("[P2P] Started with ID: %s\n", p.host.ID())
 	fmt.Printf("[P2P] Listening on: %s\n", p.host.Addrs())
 
+	// Start message router (dispatches messages to specialized channels)
+	go p.routeMessages()
+
 	return nil
+}
+
+// routeMessages dispatches incoming messages to specialized channels based on type
+func (p *P2PManager) routeMessages() {
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case msg := <-p.messageChan:
+			switch msg.Type {
+			case MsgTypePairingRequest:
+				p.pairingRequestChan <- msg
+			case MsgTypePairingResponse:
+				p.pairingResponseChan <- msg
+			case MsgTypeRequestSync:
+				p.syncRequestChan <- msg
+			case MsgTypeSyncData:
+				p.syncDataChan <- msg
+			default:
+				fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
+			}
+		}
+	}
+}
+
+// Specialized channel accessors
+func (p *P2PManager) PairingRequestChan() <-chan ReceivedMessage {
+	return p.pairingRequestChan
+}
+
+func (p *P2PManager) PairingResponseChan() <-chan ReceivedMessage {
+	return p.pairingResponseChan
+}
+
+func (p *P2PManager) SyncRequestChan() <-chan ReceivedMessage {
+	return p.syncRequestChan
+}
+
+func (p *P2PManager) SyncDataChan() <-chan ReceivedMessage {
+	return p.syncDataChan
 }
 
 func (p *P2PManager) enableMDNS() bool {
@@ -425,6 +477,10 @@ func (p *P2PManager) Stop() {
 	}
 
 	close(p.messageChan)
+	close(p.pairingRequestChan)
+	close(p.pairingResponseChan)
+	close(p.syncRequestChan)
+	close(p.syncDataChan)
 	close(p.connectedCh)
 	close(p.disconnectedCh)
 
