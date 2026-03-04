@@ -1627,17 +1627,30 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Create pairing request message
-		p2pLock.Lock()
 		msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName)
 		if err != nil {
 			log.Printf("[Pairing Join] Failed to create message: %v", err)
 		} else {
-			// Broadcast to all peers
-			p2pManager.BroadcastMessage(p2p.SyncMessage{
-				Type:    msg.Type,
-				Payload: msg.Payload,
-			})
-			log.Printf("[Pairing Join] Broadcast pairing request to all peers")
+			// Send to each connected peer directly
+			peers := p2pManager.GetConnectedPeers()
+			log.Printf("[Pairing Join] Sending to %d peers", len(peers))
+			for _, peer := range peers {
+				go func(peerID string) {
+					for i := 0; i < 3; i++ {
+						err := p2pManager.SendMessage(peerID, p2p.SyncMessage{
+							Type:    msg.Type,
+							Payload: msg.Payload,
+						})
+						if err != nil {
+							log.Printf("[Pairing Join] Failed to send to %s (attempt %d): %v", peerID, i+1, err)
+							time.Sleep(500 * time.Millisecond)
+						} else {
+							log.Printf("[Pairing Join] Sent pairing request to %s", peerID)
+							break
+						}
+					}
+				}(peer.ID)
+			}
 		}
 	} else {
 		p2pLock.Unlock()
