@@ -2241,10 +2241,20 @@ func handleSyncRequest(pm *p2p.P2PManager, peerID string) {
 
 	deviceList := make([]p2p.DeviceData, len(devices))
 	for i, d := range devices {
+		publicKey := d.PublicKey
+		// If stored public key looks like a file path, read from file
+		if len(publicKey) > 0 && publicKey[0] == '/' {
+			if pubKeyBytes, err := os.ReadFile(publicKey); err == nil {
+				publicKey = string(pubKeyBytes)
+			} else if pubKeyBytes, err := os.ReadFile(config.PublicKeyPathForVault(vault.vaultName)); err == nil {
+				// Try default path
+				publicKey = string(pubKeyBytes)
+			}
+		}
 		deviceList[i] = p2p.DeviceData{
 			ID:          d.ID,
 			Name:        d.Name,
-			PublicKey:   d.PublicKey,
+			PublicKey:   publicKey,
 			Fingerprint: d.Fingerprint,
 			Trusted:     d.Trusted,
 			CreatedAt:   d.CreatedAt.UnixMilli(),
