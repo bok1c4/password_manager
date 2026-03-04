@@ -1111,6 +1111,36 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						Type:    respMsg.Type,
 						Payload: respMsg.Payload,
 					})
+
+					// If successful, add device to trusted and re-encrypt entries
+					if response.Success {
+						log.Printf("[Pairing] Adding device to trusted and re-encrypting entries")
+
+						// Add device to trusted devices
+						vaultLock.Lock()
+						if vault != nil && vault.storage != nil {
+							device := models.Device{
+								ID:          code.DeviceID,
+								Name:        code.DeviceName,
+								PublicKey:   code.PublicKey,
+								Fingerprint: code.Fingerprint,
+								Trusted:     true,
+								CreatedAt:   time.Now(),
+							}
+							vault.storage.UpsertDevice(&device)
+							log.Printf("[Pairing] Added device %s to trusted devices", code.DeviceName)
+						}
+						vaultLock.Unlock()
+
+						// Re-encrypt all entries for the new device
+						go reEncryptEntriesForDevice(
+							msg.PeerID,
+							code.DeviceID,
+							code.DeviceName,
+							code.PublicKey,
+							code.Fingerprint,
+						)
+					}
 				}
 
 				// Handle pairing response
@@ -1695,6 +1725,60 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 									pairingResponseCh <- pairingResp
 								}
 							}
+
+							// Handle incoming sync data (entries from other device)
+							if msg.Type == p2p.MsgTypeSyncData {
+								var syncData p2p.SyncDataPayload
+								if err := json.Unmarshal(msg.Payload, &syncData); err != nil {
+									log.Printf("[Sync] Failed to parse sync data: %v", err)
+									continue
+								}
+
+								log.Printf("[Sync] Received %d entries from peer", len(syncData.Entries))
+
+								vaultLock.Lock()
+								if vault != nil && vault.storage != nil {
+									for _, entryData := range syncData.Entries {
+										entry := models.PasswordEntry{
+											ID:                entryData.ID,
+											Version:           int64(entryData.Version),
+											Site:              entryData.Site,
+											Username:          entryData.Username,
+											EncryptedPassword: entryData.EncryptedPassword,
+											EncryptedAESKeys:  entryData.EncryptedAESKeys,
+											Notes:             entryData.Notes,
+											CreatedAt:         time.UnixMilli(entryData.CreatedAt),
+											UpdatedAt:         time.UnixMilli(entryData.UpdatedAt),
+										}
+
+										// Check if entry exists
+										existing, _ := vault.storage.GetEntry(entry.ID)
+										if existing != nil {
+											// Update
+											vault.storage.UpdateEntry(&entry)
+											log.Printf("[Sync] Updated entry: %s", entry.Site)
+										} else {
+											// Create
+											vault.storage.CreateEntry(&entry)
+											log.Printf("[Sync] Created entry: %s", entry.Site)
+										}
+									}
+
+									// Add devices
+									for _, deviceData := range syncData.Devices {
+										device := models.Device{
+											ID:          deviceData.ID,
+											Name:        deviceData.Name,
+											Fingerprint: deviceData.Fingerprint,
+											Trusted:     deviceData.Trusted,
+											CreatedAt:   time.UnixMilli(deviceData.CreatedAt),
+										}
+										vault.storage.UpsertDevice(&device)
+										log.Printf("[Sync] Added device: %s", device.Name)
+									}
+								}
+								vaultLock.Unlock()
+							}
 						}
 					}
 				}()
@@ -1831,6 +1915,127 @@ func handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 		"device_name": activeCode.DeviceName,
 		"expires_in":  int(time.Until(activeCode.ExpiresAt).Seconds()),
 	}})
+}
+
+func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerprint string) {
+	vaultLock.Lock()
+	if vault == nil || vault.storage == nil || vault.privateKey == nil {
+		vaultLock.Unlock()
+		log.Printf("[Sync] Cannot re-encrypt: vault not unlocked")
+		return
+	}
+
+	privateKey := vault.privateKey.PrivateKey
+	db := vault.storage
+	cfg := vault.cfg
+	vaultLock.Unlock()
+
+	log.Printf("[Sync] Starting re-encryption for device: %s (%s)", deviceName, deviceID)
+
+	entries, err := db.ListEntries()
+	if err != nil {
+		log.Printf("[Sync] Failed to list entries: %v", err)
+		return
+	}
+
+	log.Printf("[Sync] Found %d entries to re-encrypt", len(entries))
+
+	newDevice := models.Device{
+		ID:          deviceID,
+		Name:        deviceName,
+		PublicKey:   publicKey,
+		Fingerprint: fingerprint,
+		Trusted:     true,
+	}
+
+	getPublicKey := func(fp string) (*rsa.PublicKey, error) {
+		if fp == fingerprint {
+			return crypto.LoadPublicKey(publicKey)
+		}
+		devices, _ := db.ListDevices()
+		for _, d := range devices {
+			if d.Fingerprint == fp {
+				return crypto.LoadPublicKey(d.PublicKey)
+			}
+		}
+		return nil, fmt.Errorf("device not found")
+	}
+
+	reEncryptedEntries := []p2p.EntryData{}
+
+	for i := range entries {
+		entry := &entries[i]
+		// Decrypt with current device's private key
+		password, err := crypto.HybridDecrypt(entry, privateKey)
+		if err != nil {
+			log.Printf("[Sync] Failed to decrypt entry %s: %v", entry.ID, err)
+			continue
+		}
+
+		// Re-encrypt for new device
+		encrypted, err := crypto.HybridEncrypt(password, []models.Device{newDevice}, getPublicKey)
+		if err != nil {
+			log.Printf("[Sync] Failed to re-encrypt for device %s: %v", deviceID, err)
+			continue
+		}
+
+		// Update entry with new encrypted key
+		entry.EncryptedAESKeys[deviceID] = encrypted.EncryptedAESKeys[deviceID]
+		entry.Version++
+		entry.UpdatedAt = time.Now()
+		entry.UpdatedBy = cfg.DeviceID
+
+		if err := db.UpdateEntry(entry); err != nil {
+			log.Printf("[Sync] Failed to update entry %s: %v", entry.ID, err)
+			continue
+		}
+
+		log.Printf("[Sync] Re-encrypted entry: %s (%s)", entry.Site, entry.Username)
+
+		// Add to sync data
+		reEncryptedEntries = append(reEncryptedEntries, p2p.EntryData{
+			ID:                entry.ID,
+			Site:              entry.Site,
+			Username:          entry.Username,
+			EncryptedPassword: entry.EncryptedPassword,
+			EncryptedAESKeys:  entry.EncryptedAESKeys,
+			Notes:             entry.Notes,
+			Version:           int(entry.Version),
+			CreatedAt:         entry.CreatedAt.UnixMilli(),
+			UpdatedAt:         entry.UpdatedAt.UnixMilli(),
+		})
+	}
+
+	// Send sync data to new device
+	if len(reEncryptedEntries) > 0 {
+		msg, err := p2p.CreateSyncDataMessage(reEncryptedEntries, []p2p.DeviceData{
+			{
+				ID:          deviceID,
+				Name:        deviceName,
+				Fingerprint: fingerprint,
+				Trusted:     true,
+				CreatedAt:   time.Now().UnixMilli(),
+			},
+		})
+		if err != nil {
+			log.Printf("[Sync] Failed to create sync message: %v", err)
+			return
+		}
+
+		p2pLock.Lock()
+		if p2pManager != nil && p2pManager.IsRunning() {
+			err = p2pManager.SendMessage(peerID, p2p.SyncMessage{
+				Type:    msg.Type,
+				Payload: msg.Payload,
+			})
+			if err != nil {
+				log.Printf("[Sync] Failed to send sync data: %v", err)
+			} else {
+				log.Printf("[Sync] Sent %d entries to device %s", len(reEncryptedEntries), deviceName)
+			}
+		}
+		p2pLock.Unlock()
+	}
 }
 
 func main() {
