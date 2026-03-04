@@ -23,14 +23,15 @@ import (
 )
 
 var (
-	vault            *Vault
-	vaultLock        sync.Mutex
-	p2pManager       *p2p.P2PManager
-	p2pLock          sync.Mutex
-	pendingApprovals = make(map[string]PendingApproval)
-	approvalsLock    sync.Mutex
-	pairingCodes     = make(map[string]PairingCode)
-	pairingLock      sync.Mutex
+	vault             *Vault
+	vaultLock         sync.Mutex
+	p2pManager        *p2p.P2PManager
+	p2pLock           sync.Mutex
+	pendingApprovals  = make(map[string]PendingApproval)
+	approvalsLock     sync.Mutex
+	pairingCodes      = make(map[string]PairingCode)
+	pairingLock       sync.Mutex
+	pairingResponseCh chan p2p.PairingResponsePayload
 )
 
 type PendingApproval struct {
@@ -943,6 +944,84 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[P2P] Peer disconnected: %s", peerID)
 			case msg := <-p2pManager.MessageChan():
 				log.Printf("[P2P] Message received: %s from %s", msg.Type, msg.PeerID)
+
+				// Handle pairing request
+				if msg.Type == p2p.MsgTypePairingRequest {
+					var pairingReq p2p.PairingRequestPayload
+					if err := json.Unmarshal(msg.Payload, &pairingReq); err != nil {
+						log.Printf("[Pairing] Failed to parse request: %v", err)
+						continue
+					}
+
+					log.Printf("[Pairing] Received pairing request with code: %s from %s", pairingReq.Code, pairingReq.DeviceName)
+
+					// Validate code
+					pairingLock.Lock()
+					code, exists := pairingCodes[pairingReq.Code]
+					pairingLock.Unlock()
+
+					var response p2p.PairingResponsePayload
+					if !exists {
+						response = p2p.PairingResponsePayload{Success: false, Error: "invalid_code"}
+					} else if time.Now().After(code.ExpiresAt) {
+						response = p2p.PairingResponsePayload{Success: false, Error: "code_expired"}
+					} else if code.Used {
+						response = p2p.PairingResponsePayload{Success: false, Error: "code_already_used"}
+					} else {
+						// Mark code as used
+						pairingLock.Lock()
+						code.Used = true
+						pairingCodes[pairingReq.Code] = code
+						pairingLock.Unlock()
+
+						response = p2p.PairingResponsePayload{
+							Success:     true,
+							Code:        pairingReq.Code,
+							VaultID:     code.VaultID,
+							DeviceID:    code.DeviceID,
+							DeviceName:  code.DeviceName,
+							PublicKey:   code.PublicKey,
+							Fingerprint: code.Fingerprint,
+						}
+						log.Printf("[Pairing] Validated code %s, responding to %s", pairingReq.Code, pairingReq.DeviceName)
+					}
+
+					// Send response back to the requesting peer
+					respMsg, err := p2p.CreatePairingResponseMessage(
+						response.Success,
+						response.Code,
+						response.VaultID,
+						response.DeviceID,
+						response.DeviceName,
+						response.PublicKey,
+						response.Fingerprint,
+						response.Error,
+					)
+					if err != nil {
+						log.Printf("[Pairing] Failed to create response: %v", err)
+						continue
+					}
+
+					p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{
+						Type:    respMsg.Type,
+						Payload: respMsg.Payload,
+					})
+				}
+
+				// Handle pairing response
+				if msg.Type == p2p.MsgTypePairingResponse {
+					var pairingResp p2p.PairingResponsePayload
+					if err := json.Unmarshal(msg.Payload, &pairingResp); err != nil {
+						log.Printf("[Pairing] Failed to parse response: %v", err)
+						continue
+					}
+
+					log.Printf("[Pairing] Received response: success=%v from %s", pairingResp.Success, pairingResp.DeviceName)
+
+					if pairingResponseCh != nil {
+						pairingResponseCh <- pairingResp
+					}
+				}
 			}
 		}
 	}()
@@ -1277,6 +1356,66 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 							log.Printf("[P2P] Auto: Peer disconnected: %s", peerID)
 						case msg := <-p2pManager.MessageChan():
 							log.Printf("[P2P] Auto: Message received: %s from %s", msg.Type, msg.PeerID)
+
+							// Handle pairing request
+							if msg.Type == p2p.MsgTypePairingRequest {
+								var pairingReq p2p.PairingRequestPayload
+								if err := json.Unmarshal(msg.Payload, &pairingReq); err != nil {
+									log.Printf("[Pairing] Failed to parse request: %v", err)
+									continue
+								}
+
+								log.Printf("[Pairing] Received pairing request with code: %s from %s", pairingReq.Code, pairingReq.DeviceName)
+
+								pairingLock.Lock()
+								code, exists := pairingCodes[pairingReq.Code]
+								pairingLock.Unlock()
+
+								var response p2p.PairingResponsePayload
+								if !exists {
+									response = p2p.PairingResponsePayload{Success: false, Error: "invalid_code"}
+								} else if time.Now().After(code.ExpiresAt) {
+									response = p2p.PairingResponsePayload{Success: false, Error: "code_expired"}
+								} else if code.Used {
+									response = p2p.PairingResponsePayload{Success: false, Error: "code_already_used"}
+								} else {
+									pairingLock.Lock()
+									code.Used = true
+									pairingCodes[pairingReq.Code] = code
+									pairingLock.Unlock()
+
+									response = p2p.PairingResponsePayload{
+										Success:     true,
+										Code:        pairingReq.Code,
+										VaultID:     code.VaultID,
+										DeviceID:    code.DeviceID,
+										DeviceName:  code.DeviceName,
+										PublicKey:   code.PublicKey,
+										Fingerprint: code.Fingerprint,
+									}
+								}
+
+								respMsg, err := p2p.CreatePairingResponseMessage(response.Success, response.Code, response.VaultID, response.DeviceID, response.DeviceName, response.PublicKey, response.Fingerprint, response.Error)
+								if err != nil {
+									log.Printf("[Pairing] Failed to create response: %v", err)
+									continue
+								}
+
+								p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+							}
+
+							// Handle pairing response
+							if msg.Type == p2p.MsgTypePairingResponse {
+								var pairingResp p2p.PairingResponsePayload
+								if err := json.Unmarshal(msg.Payload, &pairingResp); err != nil {
+									log.Printf("[Pairing] Failed to parse response: %v", err)
+									continue
+								}
+
+								if pairingResponseCh != nil {
+									pairingResponseCh <- pairingResp
+								}
+							}
 						}
 					}
 				}()
@@ -1403,6 +1542,21 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 							log.Printf("[P2P] Join: Peer disconnected: %s", peerID)
 						case msg := <-p2pManager.MessageChan():
 							log.Printf("[P2P] Join: Message received: %s from %s", msg.Type, msg.PeerID)
+
+							// Handle pairing response
+							if msg.Type == p2p.MsgTypePairingResponse {
+								var pairingResp p2p.PairingResponsePayload
+								if err := json.Unmarshal(msg.Payload, &pairingResp); err != nil {
+									log.Printf("[Pairing] Failed to parse response: %v", err)
+									continue
+								}
+
+								log.Printf("[Pairing] Received response: success=%v from %s", pairingResp.Success, pairingResp.DeviceName)
+
+								if pairingResponseCh != nil {
+									pairingResponseCh <- pairingResp
+								}
+							}
 						}
 					}
 				}()
@@ -1423,73 +1577,88 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 
 	req.Code = strings.ToUpper(strings.ReplaceAll(req.Code, "-", ""))
 
-	log.Printf("[Pairing Join] Looking for code: '%s' (normalized)", req.Code)
-	log.Printf("[Pairing Join] Available codes: %d", len(pairingCodes))
+	log.Printf("[Pairing Join] Looking for code: '%s' via P2P", req.Code)
 
-	pairingLock.Lock()
-	code, exists := pairingCodes[req.Code]
-	pairingLock.Unlock()
+	// Get device info for the pairing request
+	joiningDeviceID := ""
+	joiningDeviceName := req.DeviceName
 
-	if !exists {
-		jsonResponse(w, Response{Success: false, Error: "invalid_code"})
-		return
+	vaultLock.Lock()
+	if vault != nil && vault.cfg != nil {
+		joiningDeviceID = vault.cfg.DeviceID
+	}
+	vaultLock.Unlock()
+
+	if joiningDeviceID == "" {
+		activeVault, _ := config.GetActiveVault()
+		if activeVault != "" {
+			vaultConfig, _ := config.LoadVaultConfig(activeVault)
+			if vaultConfig != nil {
+				joiningDeviceID = vaultConfig.DeviceID
+			}
+		}
 	}
 
-	if time.Now().After(code.ExpiresAt) {
-		jsonResponse(w, Response{Success: false, Error: "code_expired"})
-		return
+	if joiningDeviceID == "" {
+		joiningDeviceID = uuid.New().String()
 	}
 
-	if code.Used {
-		jsonResponse(w, Response{Success: false, Error: "code_already_used"})
-		return
-	}
-
+	// Send pairing request via P2P to all peers
 	p2pLock.Lock()
-	if p2pManager == nil || !p2pManager.IsRunning() {
-		p2pLock.Unlock()
-		jsonResponse(w, Response{Success: false, Error: "p2p_not_running"})
-		return
-	}
-
-	peers := p2pManager.GetAllPeers()
-	var targetPeer *p2p.PeerInfo
-	for _, p := range peers {
-		if p.ID == code.DeviceID || p.ID == code.Fingerprint {
-			targetPeer = &p
-			break
+	if p2pManager != nil && p2pManager.IsRunning() {
+		// Create pairing request message
+		msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName)
+		if err != nil {
+			log.Printf("[Pairing Join] Failed to create message: %v", err)
+		} else {
+			// Broadcast to all peers
+			p2pManager.BroadcastMessage(p2p.SyncMessage{
+				Type:    msg.Type,
+				Payload: msg.Payload,
+			})
+			log.Printf("[Pairing Join] Broadcast pairing request to all peers")
 		}
 	}
 	p2pLock.Unlock()
 
-	if targetPeer == nil {
-		jsonResponse(w, Response{Success: false, Error: "device_not_found_on_network"})
+	// Wait for response (with timeout)
+	responseCh := make(chan p2p.PairingResponsePayload, 10)
+	pairingResponseCh = responseCh
+
+	// Wait for valid response
+	select {
+	case response := <-responseCh:
+		pairingResponseCh = nil
+		if !response.Success {
+			jsonResponse(w, Response{Success: false, Error: response.Error})
+			return
+		}
+
+		log.Printf("[Pairing Join] Received valid response from: %s", response.DeviceName)
+
+		// Add to pending approvals (auto-approve since code was valid)
+		approvalsLock.Lock()
+		pendingApprovals[response.DeviceID] = PendingApproval{
+			DeviceID:    response.DeviceID,
+			DeviceName:  response.DeviceName,
+			PublicKey:   response.PublicKey,
+			Fingerprint: response.Fingerprint,
+			Status:      "paired",
+		}
+		approvalsLock.Unlock()
+
+		jsonResponse(w, Response{Success: true, Data: map[string]interface{}{
+			"message":         "Connected to vault",
+			"device_name":     response.DeviceName,
+			"device_approved": true,
+		}})
+		return
+
+	case <-time.After(15 * time.Second):
+		pairingResponseCh = nil
+		jsonResponse(w, Response{Success: false, Error: "no_response_from_vault"})
 		return
 	}
-
-	pairingLock.Lock()
-	code.Used = true
-	pairingCodes[req.Code] = code
-	pairingLock.Unlock()
-
-	approvalsLock.Lock()
-	pendingApprovals[targetPeer.ID] = PendingApproval{
-		DeviceID:    targetPeer.ID,
-		DeviceName:  code.DeviceName,
-		PublicKey:   code.PublicKey,
-		Fingerprint: code.Fingerprint,
-		Status:      "paired",
-		PairingCode: req.Code,
-	}
-	approvalsLock.Unlock()
-
-	log.Printf("[Pairing] Device %s joined via code %s", req.DeviceName, req.Code)
-
-	jsonResponse(w, Response{Success: true, Data: map[string]interface{}{
-		"message":         "Connected to vault",
-		"device_name":     code.DeviceName,
-		"device_approved": true,
-	}})
 }
 
 func handlePairingStatus(w http.ResponseWriter, r *http.Request) {

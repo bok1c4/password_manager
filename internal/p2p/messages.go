@@ -19,6 +19,8 @@ const (
 	MsgTypePong            = "PONG"
 	MsgTypeEntryUpdate     = "ENTRY_UPDATE"
 	MsgTypeEntryDelete     = "ENTRY_DELETE"
+	MsgTypePairingRequest  = "PAIRING_REQUEST"
+	MsgTypePairingResponse = "PAIRING_RESPONSE"
 )
 
 type Message struct {
@@ -170,6 +172,29 @@ func CreateRejectDeviceMessage(deviceID, reason string) (*Message, error) {
 	return NewMessage(MsgTypeRejectDevice, payload)
 }
 
+func CreatePairingRequestMessage(code, deviceID, deviceName string) (*Message, error) {
+	payload := PairingRequestPayload{
+		Code:       code,
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+	}
+	return NewMessage(MsgTypePairingRequest, payload)
+}
+
+func CreatePairingResponseMessage(success bool, code, vaultID, deviceID, deviceName, publicKey, fingerprint, errMsg string) (*Message, error) {
+	payload := PairingResponsePayload{
+		Success:     success,
+		Code:        code,
+		VaultID:     vaultID,
+		DeviceID:    deviceID,
+		DeviceName:  deviceName,
+		PublicKey:   publicKey,
+		Fingerprint: fingerprint,
+		Error:       errMsg,
+	}
+	return NewMessage(MsgTypePairingResponse, payload)
+}
+
 func CreatePingMessage() (*Message, error) {
 	return NewMessage(MsgTypePing, nil)
 }
@@ -180,4 +205,21 @@ func CreatePongMessage() (*Message, error) {
 
 func GenerateMessageID() string {
 	return uuid.New().String()
+}
+
+type PairingRequestPayload struct {
+	Code       string `json:"code"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+}
+
+type PairingResponsePayload struct {
+	Success     bool   `json:"success"`
+	Code        string `json:"code,omitempty"`
+	VaultID     string `json:"vault_id,omitempty"`
+	DeviceID    string `json:"device_id,omitempty"`
+	DeviceName  string `json:"device_name,omitempty"`
+	PublicKey   string `json:"public_key,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
