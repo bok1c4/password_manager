@@ -27,9 +27,14 @@ type PeerInfo struct {
 
 type SyncMessage struct {
 	Type      string `json:"type"`
-	PeerID    string `json:"peer_id"`
+	PeerID    string `json:"peer_id"` // Sender's ID from message payload
 	Payload   []byte `json:"payload"`
 	Timestamp int64  `json:"timestamp"`
+}
+
+type ReceivedMessage struct {
+	SyncMessage
+	FromPeer string // Actual peer ID from connection
 }
 
 type P2PManager struct {
@@ -40,7 +45,7 @@ type P2PManager struct {
 	peers          map[string]PeerInfo
 	deviceName     string
 	deviceID       string
-	messageChan    chan SyncMessage
+	messageChan    chan ReceivedMessage
 	discovery      mdns.Service
 	connectedCh    chan PeerInfo
 	disconnectedCh chan string
@@ -62,7 +67,7 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 		peers:          make(map[string]PeerInfo),
 		deviceName:     cfg.DeviceName,
 		deviceID:       cfg.DeviceID,
-		messageChan:    make(chan SyncMessage, 100),
+		messageChan:    make(chan ReceivedMessage, 100),
 		connectedCh:    make(chan PeerInfo, 10),
 		disconnectedCh: make(chan string, 10),
 	}
@@ -179,22 +184,29 @@ func (p *P2PManager) handleStream(stream network.Stream) {
 }
 
 func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
+	fmt.Printf("[P2P] handleMessage called: type=%s, fromPeer=%s, msg.PeerID=%s\n", msg.Type, fromPeer, msg.PeerID)
+
+	receivedMsg := ReceivedMessage{
+		SyncMessage: msg,
+		FromPeer:    fromPeer.String(),
+	}
+
 	switch msg.Type {
 	case MsgTypeRequestSync:
 		fmt.Printf("[P2P] Received sync request from: %s\n", fromPeer)
-		p.messageChan <- msg
+		p.messageChan <- receivedMsg
 	case MsgTypeSyncData:
 		fmt.Printf("[P2P] Received sync data from: %s\n", fromPeer)
-		p.messageChan <- msg
+		p.messageChan <- receivedMsg
 	case MsgTypeHello:
 		fmt.Printf("[P2P] Received HELLO from: %s\n", fromPeer)
-		p.messageChan <- msg
+		p.messageChan <- receivedMsg
 	case MsgTypePairingRequest:
-		fmt.Printf("[P2P] Received PAIRING_REQUEST from: %s\n", fromPeer)
-		p.messageChan <- msg
+		fmt.Printf("[P2P] Received PAIRING_REQUEST from: %s (msg.PeerID=%s)\n", fromPeer, msg.PeerID)
+		p.messageChan <- receivedMsg
 	case MsgTypePairingResponse:
-		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s\n", fromPeer)
-		p.messageChan <- msg
+		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s (msg.PeerID=%s)\n", fromPeer, msg.PeerID)
+		p.messageChan <- receivedMsg
 	default:
 		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
 	}
@@ -335,6 +347,16 @@ func (p *P2PManager) SendMessage(peerID string, msg SyncMessage) error {
 	}
 	defer stream.Close()
 
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	_, err = stream.Write(data)
+	if err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
 	fmt.Printf("[P2P] Sending message to %s: %s\n", peerID, msg.Type)
 	return nil
 }
@@ -387,7 +409,7 @@ func (p *P2PManager) DisconnectedChan() <-chan string {
 	return p.disconnectedCh
 }
 
-func (p *P2PManager) MessageChan() <-chan SyncMessage {
+func (p *P2PManager) MessageChan() <-chan ReceivedMessage {
 	return p.messageChan
 }
 

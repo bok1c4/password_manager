@@ -1032,7 +1032,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 			case peerID := <-p2pManager.DisconnectedChan():
 				log.Printf("[P2P] Peer disconnected: %s", peerID)
 			case msg := <-p2pManager.MessageChan():
-				log.Printf("[P2P] Message received: %s from %s", msg.Type, msg.PeerID)
+				log.Printf("[P2P] Message received: %s from %s (actual peer: %s)", msg.Type, msg.PeerID, msg.FromPeer)
 
 				// Handle all message types
 				if msg.Type == p2p.MsgTypePairingResponse {
@@ -1107,7 +1107,8 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 
-					p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{
+					log.Printf("[Pairing] Sending response to actual peer: %s (msg.PeerID was: %s)", msg.FromPeer, msg.PeerID)
+					p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{
 						Type:    respMsg.Type,
 						Payload: respMsg.Payload,
 					})
@@ -1134,7 +1135,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 
 						// Re-encrypt all entries for the new device
 						go reEncryptEntriesForDevice(
-							msg.PeerID,
+							msg.FromPeer,
 							code.DeviceID,
 							code.DeviceName,
 							code.PublicKey,
@@ -1490,7 +1491,7 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 						case peerID := <-p2pManager.DisconnectedChan():
 							log.Printf("[P2P] Auto: Peer disconnected: %s", peerID)
 						case msg := <-p2pManager.MessageChan():
-							log.Printf("[P2P] Auto: Message received: %s from %s", msg.Type, msg.PeerID)
+							log.Printf("[P2P] Auto: Message received: %s from %s (actual: %s)", msg.Type, msg.PeerID, msg.FromPeer)
 
 							// Handle pairing request
 							if msg.Type == p2p.MsgTypePairingRequest {
@@ -1536,7 +1537,8 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 									continue
 								}
 
-								p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+								log.Printf("[Pairing] Auto: Sending response to actual peer: %s", msg.FromPeer)
+								p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
 							}
 
 							// Handle pairing response
@@ -1676,7 +1678,7 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 						case peerID := <-p2pManager.DisconnectedChan():
 							log.Printf("[P2P] Join: Peer disconnected: %s", peerID)
 						case msg := <-p2pManager.MessageChan():
-							log.Printf("[P2P] Join: Message received: %s from %s", msg.Type, msg.PeerID)
+							log.Printf("[P2P] Join: Message received: %s from %s (actual: %s)", msg.Type, msg.PeerID, msg.FromPeer)
 
 							// Handle pairing request (Arch is asking us to validate)
 							if msg.Type == p2p.MsgTypePairingRequest {
@@ -1706,8 +1708,9 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 									log.Printf("[Pairing] Validated code %s from joining device", pairingReq.Code)
 								}
 
+								log.Printf("[Pairing] Join: Sending response to actual peer: %s", msg.FromPeer)
 								respMsg, _ := p2p.CreatePairingResponseMessage(response.Success, response.Code, "", response.DeviceID, response.DeviceName, "", "", response.Error)
-								p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+								p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
 								continue
 							}
 
