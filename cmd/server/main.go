@@ -1555,6 +1555,7 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 
 		// Get joiner's public key to send in pairing request
 		joinerPublicKey := ""
+		vaultInitialized := false
 		if vault != nil {
 			vaultLock.Lock()
 			if vault.cfg != nil {
@@ -1562,9 +1563,16 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 				pubKeyBytes, err := os.ReadFile(pubKeyPath)
 				if err == nil {
 					joinerPublicKey = string(pubKeyBytes)
+					vaultInitialized = true
+				} else {
+					log.Printf("[Pairing Join] Warning: No public key found at %s - vault may not be initialized", pubKeyPath)
 				}
 			}
 			vaultLock.Unlock()
+		}
+
+		if !vaultInitialized {
+			log.Printf("[Pairing Join] ERROR: Vault not initialized on joining device. Please initialize your vault first before pairing.")
 		}
 
 		for _, peer := range peers {
@@ -2087,6 +2095,8 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 			if pubKey, err := crypto.ParsePublicKey(pairingReq.PublicKey); err == nil {
 				joinerFingerprint = crypto.GetFingerprint(pubKey)
 			}
+		} else {
+			log.Printf("[Pairing] WARNING: Joiner %s did not provide a public key. They must initialize their vault before pairing. Passwords will NOT be re-encrypted for this device.", pairingReq.DeviceName)
 		}
 
 		vaultLock.Lock()
@@ -2103,14 +2113,18 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 			vault.storage.UpsertDevice(&device)
 			log.Printf("[Pairing] Added joiner %s as trusted device (fingerprint: %s)", pairingReq.DeviceName, joinerFingerprint)
 
-			// Re-encrypt all entries for the new joiner
-			go reEncryptEntriesForDevice(
-				msg.FromPeer,
-				pairingReq.DeviceID,
-				pairingReq.DeviceName,
-				pairingReq.PublicKey,
-				joinerFingerprint,
-			)
+			// Only re-encrypt if joiner provided a public key
+			if pairingReq.PublicKey != "" {
+				go reEncryptEntriesForDevice(
+					msg.FromPeer,
+					pairingReq.DeviceID,
+					pairingReq.DeviceName,
+					pairingReq.PublicKey,
+					joinerFingerprint,
+				)
+			} else {
+				log.Printf("[Pairing] Skipping re-encryption - joiner has no public key")
+			}
 		} else {
 			log.Printf("[Pairing] WARNING: vault not available for adding trusted device")
 		}
