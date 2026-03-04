@@ -1606,7 +1606,28 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 	// Send pairing request via P2P to all peers
 	p2pLock.Lock()
 	if p2pManager != nil && p2pManager.IsRunning() {
+		// Wait for at least one peer to be connected
+		maxWait := 10 // seconds
+		connected := false
+		for i := 0; i < maxWait; i++ {
+			peers := p2pManager.GetConnectedPeers()
+			if len(peers) > 0 {
+				connected = true
+				break
+			}
+			p2pLock.Unlock()
+			time.Sleep(1 * time.Second)
+			p2pLock.Lock()
+		}
+		p2pLock.Unlock()
+
+		if !connected {
+			jsonResponse(w, Response{Success: false, Error: "no_peers_found"})
+			return
+		}
+
 		// Create pairing request message
+		p2pLock.Lock()
 		msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName)
 		if err != nil {
 			log.Printf("[Pairing Join] Failed to create message: %v", err)
@@ -1618,8 +1639,9 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			})
 			log.Printf("[Pairing Join] Broadcast pairing request to all peers")
 		}
+	} else {
+		p2pLock.Unlock()
 	}
-	p2pLock.Unlock()
 
 	// Wait for response (with timeout)
 	responseCh := make(chan p2p.PairingResponsePayload, 10)
