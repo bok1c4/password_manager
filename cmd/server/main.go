@@ -32,7 +32,16 @@ var (
 	pairingCodes      = make(map[string]PairingCode)
 	pairingLock       sync.Mutex
 	pairingResponseCh chan p2p.PairingResponsePayload
+	pairingRequests   = make(map[string]PairingRequest)
 )
+
+type PairingRequest struct {
+	Code       string
+	DeviceID   string
+	DeviceName string
+	ResponseCh chan p2p.PairingResponsePayload
+	CreatedAt  time.Time
+}
 
 type PendingApproval struct {
 	DeviceID    string
@@ -928,6 +937,44 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 			case peer := <-p2pManager.ConnectedChan():
 				log.Printf("[P2P] ========== PEER CONNECTED: %s ==========", peer.ID)
 				log.Printf("[P2P] Connected peers: %d", len(p2pManager.GetConnectedPeers()))
+
+				// Check if there's a pending pairing request from this peer
+				go func(peerID string) {
+					time.Sleep(1 * time.Second) // Wait for connection to stabilize
+
+					// Check all pending pairing requests
+					pairingLock.Lock()
+					for code, req := range pairingRequests {
+						if time.Since(req.CreatedAt) < 5*time.Minute {
+							log.Printf("[Pairing] Found pending request for code %s, initiating validation", code)
+
+							// Send pairing request to this peer
+							msg, err := p2p.CreatePairingRequestMessage(code, req.DeviceID, req.DeviceName)
+							if err != nil {
+								log.Printf("[Pairing] Failed to create request: %v", err)
+								pairingLock.Unlock()
+								return
+							}
+							pairingLock.Unlock()
+
+							for i := 0; i < 5; i++ {
+								err := p2pManager.SendMessage(peerID, p2p.SyncMessage{
+									Type:    msg.Type,
+									Payload: msg.Payload,
+								})
+								if err != nil {
+									log.Printf("[Pairing] Failed to send to %s (attempt %d): %v", peerID, i+1, err)
+									time.Sleep(1 * time.Second)
+								} else {
+									log.Printf("[Pairing] Sent validation request to %s for code %s", peerID, code)
+									return
+								}
+							}
+						}
+					}
+					pairingLock.Unlock()
+				}(peer.ID)
+
 				approvalsLock.Lock()
 				if _, exists := pendingApprovals[peer.ID]; !exists {
 					pendingApprovals[peer.ID] = PendingApproval{
@@ -1560,6 +1607,39 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 						case msg := <-p2pManager.MessageChan():
 							log.Printf("[P2P] Join: Message received: %s from %s", msg.Type, msg.PeerID)
 
+							// Handle pairing request (Arch is asking us to validate)
+							if msg.Type == p2p.MsgTypePairingRequest {
+								var pairingReq p2p.PairingRequestPayload
+								if err := json.Unmarshal(msg.Payload, &pairingReq); err != nil {
+									log.Printf("[Pairing] Failed to parse request: %v", err)
+									continue
+								}
+
+								log.Printf("[Pairing] Received pairing request: code=%s from=%s", pairingReq.Code, pairingReq.DeviceName)
+
+								// Validate against our stored request
+								pairingLock.Lock()
+								req, exists := pairingRequests[pairingReq.Code]
+								pairingLock.Unlock()
+
+								var response p2p.PairingResponsePayload
+								if !exists {
+									response = p2p.PairingResponsePayload{Success: false, Error: "no_pending_request"}
+								} else {
+									response = p2p.PairingResponsePayload{
+										Success:    true,
+										Code:       pairingReq.Code,
+										DeviceID:   req.DeviceID,
+										DeviceName: req.DeviceName,
+									}
+									log.Printf("[Pairing] Validated code %s from joining device", pairingReq.Code)
+								}
+
+								respMsg, _ := p2p.CreatePairingResponseMessage(response.Success, response.Code, "", response.DeviceID, response.DeviceName, "", "", response.Error)
+								p2pManager.SendMessage(msg.PeerID, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+								continue
+							}
+
 							// Handle pairing response
 							if msg.Type == p2p.MsgTypePairingResponse {
 								var pairingResp p2p.PairingResponsePayload
@@ -1620,62 +1700,36 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		joiningDeviceID = uuid.New().String()
 	}
 
-	// Send pairing request via P2P to all peers
-	p2pLock.Lock()
-	if p2pManager != nil && p2pManager.IsRunning() {
-		// Wait for at least one peer to be connected
-		maxWait := 10 // seconds
-		connected := false
-		for i := 0; i < maxWait; i++ {
-			peers := p2pManager.GetConnectedPeers()
-			if len(peers) > 0 {
-				connected = true
-				break
-			}
-			p2pLock.Unlock()
-			time.Sleep(1 * time.Second)
-			p2pLock.Lock()
-		}
-		p2pLock.Unlock()
-
-		if !connected {
-			jsonResponse(w, Response{Success: false, Error: "no_peers_found"})
-			return
-		}
-
-		// Create pairing request message
-		msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName)
-		if err != nil {
-			log.Printf("[Pairing Join] Failed to create message: %v", err)
-		} else {
-			// Send to each connected peer directly
-			peers := p2pManager.GetConnectedPeers()
-			log.Printf("[Pairing Join] Sending to %d peers", len(peers))
-			for _, peer := range peers {
-				go func(peerID string) {
-					for i := 0; i < 3; i++ {
-						err := p2pManager.SendMessage(peerID, p2p.SyncMessage{
-							Type:    msg.Type,
-							Payload: msg.Payload,
-						})
-						if err != nil {
-							log.Printf("[Pairing Join] Failed to send to %s (attempt %d): %v", peerID, i+1, err)
-							time.Sleep(500 * time.Millisecond)
-						} else {
-							log.Printf("[Pairing Join] Sent pairing request to %s", peerID)
-							break
-						}
-					}
-				}(peer.ID)
-			}
-		}
-	} else {
-		p2pLock.Unlock()
+	// Store pairing request and wait for generating side to connect
+	pairingLock.Lock()
+	pairingRequests[req.Code] = PairingRequest{
+		Code:       req.Code,
+		DeviceID:   joiningDeviceID,
+		DeviceName: joiningDeviceName,
+		CreatedAt:  time.Now(),
 	}
+	pairingLock.Unlock()
 
-	// Wait for response (with timeout)
+	log.Printf("[Pairing Join] Stored request for code: %s, waiting for vault to connect...", req.Code)
+
+	// Wait for response (with timeout) - generating side will connect and validate
 	responseCh := make(chan p2p.PairingResponsePayload, 10)
 	pairingResponseCh = responseCh
+
+	// Wait up to 30 seconds for generating side to connect and validate
+	waitTime := 30
+	for i := 0; i < waitTime; i++ {
+		p2pLock.Lock()
+		peers := p2pManager.GetConnectedPeers()
+		p2pLock.Unlock()
+
+		if len(peers) > 0 {
+			// Try sending now
+			break
+		}
+		log.Printf("[Pairing Join] Waiting for connection... (%d/%d)", i+1, waitTime)
+		time.Sleep(1 * time.Second)
+	}
 
 	// Wait for valid response
 	select {
