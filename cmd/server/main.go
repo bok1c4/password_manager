@@ -1724,29 +1724,50 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		}
 		vaultLock.Unlock()
 
-		// Request sync from generator (more reliable than waiting for push)
-		log.Printf("[Pairing Join] Requesting vault sync from %s...", response.DeviceName)
-
 		// Find the generator's peer ID from connected peers
-		// Match by looking for a peer that has the generator's device ID
 		p2pLock.Lock()
 		peers := p2pManager.GetAllPeers()
 		var generatorPeerID string
 		for _, p := range peers {
-			log.Printf("[Pairing Join] Found peer: %s (connected: %v)", p.ID, p.Connected)
-			// Check if this peer matches the generator's device ID from response
 			if p.ID == response.DeviceID || p.Name == response.DeviceName {
 				generatorPeerID = p.ID
-				log.Printf("[Pairing Join] Found generator peer: %s (matched by ID/name)", generatorPeerID)
 				break
 			}
 		}
-		// Fallback: if no match, use last peer (legacy behavior)
 		if generatorPeerID == "" && len(peers) > 0 {
 			generatorPeerID = peers[len(peers)-1].ID
-			log.Printf("[Pairing Join] Using fallback peer: %s", generatorPeerID)
 		}
 		p2pLock.Unlock()
+
+		// NEW: After creating vault, send pairing request WITH public key to trigger re-encryption
+		if vault != nil && vault.privateKey != nil && generatorPeerID != "" {
+			log.Printf("[Pairing Join] Sending updated pairing request with public key to %s...", generatorPeerID)
+
+			// Get our newly created public key
+			pubKeyPath := config.PublicKeyPathForVault(vaultName)
+			if pubKeyBytes, err := os.ReadFile(pubKeyPath); err == nil {
+				joinerPublicKey := string(pubKeyBytes)
+
+				// Send new pairing request to generator with public key
+				msg, err := p2p.CreatePairingRequestMessage(req.Code, vault.cfg.DeviceID, vault.cfg.DeviceName, joinerPublicKey, joinPassword)
+				if err != nil {
+					log.Printf("[Pairing Join] Failed to create updated request: %v", err)
+				} else {
+					err = p2pManager.SendMessage(generatorPeerID, p2p.SyncMessage{
+						Type:    msg.Type,
+						Payload: msg.Payload,
+					})
+					if err != nil {
+						log.Printf("[Pairing Join] Failed to send updated request: %v", err)
+					} else {
+						log.Printf("[Pairing Join] Sent updated pairing request with public key to %s", generatorPeerID)
+					}
+				}
+			}
+		}
+
+		// Request sync from generator (more reliable than waiting for push)
+		log.Printf("[Pairing Join] Requesting vault sync from %s...", response.DeviceName)
 
 		if generatorPeerID != "" {
 			// Send request for full sync
