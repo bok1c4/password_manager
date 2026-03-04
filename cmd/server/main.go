@@ -926,7 +926,8 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case peer := <-p2pManager.ConnectedChan():
-				log.Printf("[P2P] Received connected event: %s", peer.ID)
+				log.Printf("[P2P] ========== PEER CONNECTED: %s ==========", peer.ID)
+				log.Printf("[P2P] Connected peers: %d", len(p2pManager.GetConnectedPeers()))
 				approvalsLock.Lock()
 				if _, exists := pendingApprovals[peer.ID]; !exists {
 					pendingApprovals[peer.ID] = PendingApproval{
@@ -945,8 +946,24 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 			case msg := <-p2pManager.MessageChan():
 				log.Printf("[P2P] Message received: %s from %s", msg.Type, msg.PeerID)
 
+				// Handle all message types
+				if msg.Type == p2p.MsgTypePairingResponse {
+					log.Printf("[P2P] Received PAIRING_RESPONSE")
+					var pairingResp p2p.PairingResponsePayload
+					if err := json.Unmarshal(msg.Payload, &pairingResp); err != nil {
+						log.Printf("[Pairing] Failed to parse response: %v", err)
+						continue
+					}
+					log.Printf("[Pairing] Response: success=%v, error=%s", pairingResp.Success, pairingResp.Error)
+					if pairingResponseCh != nil {
+						pairingResponseCh <- pairingResp
+					}
+					continue
+				}
+
 				// Handle pairing request
 				if msg.Type == p2p.MsgTypePairingRequest {
+					log.Printf("[P2P] Received PAIRING_REQUEST")
 					var pairingReq p2p.PairingRequestPayload
 					if err := json.Unmarshal(msg.Payload, &pairingReq); err != nil {
 						log.Printf("[Pairing] Failed to parse request: %v", err)
