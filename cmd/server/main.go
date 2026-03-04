@@ -1236,12 +1236,14 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 
 	publicKey := string(publicKeyBytes)
 	code := generatePairingCode()
+	// Normalize code for lookup (remove dashes)
+	normalizedCode := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
 	fingerprint := deviceID
 
 	activeVault, _ := config.GetActiveVault()
 
 	pairingLock.Lock()
-	pairingCodes[code] = PairingCode{
+	pairingCodes[normalizedCode] = PairingCode{
 		Code:        code,
 		VaultID:     activeVault,
 		DeviceID:    deviceID,
