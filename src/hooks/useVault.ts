@@ -85,7 +85,7 @@ interface VaultState {
   rejectDevice: (deviceId: string, reason: string) => Promise<void>;
   p2pSync: (fullSync?: boolean) => Promise<void>;
   pairingGenerate: () => Promise<{code: string, device_name: string, expires_in: number}>;
-  pairingJoin: (code: string, deviceName: string) => Promise<void>;
+  pairingJoin: (code: string, deviceName: string, password: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -392,8 +392,8 @@ export const useVault = create<VaultState>((set, get) => ({
     return result.data;
   },
 
-  pairingJoin: async (code: string, deviceName: string) => {
-    await api.pairingJoin(code, deviceName);
+  pairingJoin: async (code: string, deviceName: string, password: string) => {
+    await api.pairingJoin(code, deviceName, password);
     await get().fetchDevices();
   },
 

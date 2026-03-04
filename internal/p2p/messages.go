@@ -172,19 +172,21 @@ func CreateRejectDeviceMessage(deviceID, reason string) (*Message, error) {
 	return NewMessage(MsgTypeRejectDevice, payload)
 }
 
-func CreatePairingRequestMessage(code, deviceID, deviceName string) (*Message, error) {
+func CreatePairingRequestMessage(code, deviceID, deviceName, password string) (*Message, error) {
 	payload := PairingRequestPayload{
 		Code:       code,
 		DeviceID:   deviceID,
 		DeviceName: deviceName,
+		Password:   password,
 	}
 	return NewMessage(MsgTypePairingRequest, payload)
 }
 
-func CreatePairingResponseMessage(success bool, code, vaultID, deviceID, deviceName, publicKey, fingerprint, errMsg string) (*Message, error) {
+func CreatePairingResponseMessage(success bool, code, vaultName, vaultID, deviceID, deviceName, publicKey, fingerprint, errMsg string) (*Message, error) {
 	payload := PairingResponsePayload{
 		Success:     success,
 		Code:        code,
+		VaultName:   vaultName, // NEW
 		VaultID:     vaultID,
 		DeviceID:    deviceID,
 		DeviceName:  deviceName,
@@ -211,11 +213,13 @@ type PairingRequestPayload struct {
 	Code       string `json:"code"`
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
+	Password   string `json:"password,omitempty"` // Vault password for verification
 }
 
 type PairingResponsePayload struct {
 	Success     bool   `json:"success"`
 	Code        string `json:"code,omitempty"`
+	VaultName   string `json:"vault_name,omitempty"` // NEW: name of vault being joined
 	VaultID     string `json:"vault_id,omitempty"`
 	DeviceID    string `json:"device_id,omitempty"`
 	DeviceName  string `json:"device_name,omitempty"`

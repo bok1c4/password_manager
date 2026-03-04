@@ -31,6 +31,7 @@ function App() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState('');
   const [joinDeviceName, setJoinDeviceName] = useState('');
+  const [joinPassword, setJoinPassword] = useState('');
   const [joinError, setJoinError] = useState('');
   const [isJoining, setIsJoining] = useState(false);
 
@@ -103,17 +104,18 @@ function App() {
 
   const handleJoinVault = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pairingCode.trim() || !joinDeviceName.trim()) return;
+    if (!pairingCode.trim() || !joinDeviceName.trim() || !joinPassword.trim()) return;
 
     setIsJoining(true);
     setJoinError('');
     try {
-      await pairingJoin(pairingCode.trim().toUpperCase(), joinDeviceName.trim());
+      await pairingJoin(pairingCode.trim().toUpperCase(), joinDeviceName.trim(), joinPassword.trim());
       // Join successful - the vault should now be in the list
       await checkInitialized();
       setView('home');
       setPairingCode('');
       setJoinDeviceName('');
+      setJoinPassword('');
     } catch (e: any) {
       setJoinError(e.toString());
     } finally {
@@ -394,6 +396,17 @@ function App() {
                 required
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Vault Password</label>
+              <input
+                type="password"
+                value={joinPassword}
+                onChange={(e) => setJoinPassword(e.target.value)}
+                placeholder="Enter the vault password from the other device"
+                className="w-full px-4 py-3 rounded-lg border dark:bg-gray-700"
+                required
+              />
+            </div>
             {joinError && <p className="text-red-500 text-sm">{joinError}</p>}
             <div className="flex gap-3">
               <button
@@ -405,7 +418,7 @@ function App() {
               </button>
               <button
                 type="submit"
-                disabled={isJoining || !pairingCode.trim() || !joinDeviceName.trim()}
+                disabled={isJoining || !pairingCode.trim() || !joinDeviceName.trim() || !joinPassword.trim()}
                 className="flex-1 py-3 bg-green-600 text-white rounded-lg font-medium disabled:opacity-50"
               >
                 {isJoining ? 'Joining...' : 'Join Vault'}

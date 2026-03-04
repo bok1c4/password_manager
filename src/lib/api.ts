@@ -54,8 +54,8 @@ export const api = {
   
   // Pairing
   pairingGenerate: () => apiCall('/pairing/generate'),
-  pairingJoin: (code: string, deviceName: string) => 
-    apiCall('/pairing/join', { method: 'POST', body: JSON.stringify({ code, device_name: deviceName }) }),
+  pairingJoin: (code: string, deviceName: string, password: string) => 
+    apiCall('/pairing/join', { method: 'POST', body: JSON.stringify({ code, device_name: deviceName, password }) }),
   pairingStatus: () => apiCall('/pairing/status'),
   
   // Generate password

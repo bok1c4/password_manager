@@ -7,6 +7,7 @@ export function Settings() {
   const [pairingCode, setPairingCode] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [deviceName, setDeviceName] = useState('New Device');
+  const [joinPassword, setJoinPassword] = useState('');
   const [connectAddress, setConnectAddress] = useState('');
 
   useEffect(() => {
@@ -33,8 +34,9 @@ export function Settings() {
 
   const handleJoinVault = async () => {
     try {
-      await pairingJoin(joinCode, deviceName);
+      await pairingJoin(joinCode, deviceName, joinPassword);
       setJoinCode('');
+      setJoinPassword('');
       setShowPairing(null);
     } catch (e) {
       console.error('Failed to join vault:', e);
@@ -137,15 +139,22 @@ export function Settings() {
                 placeholder="Device name"
                 className="w-full px-3 py-2 rounded border dark:bg-gray-700 dark:border-gray-600 text-sm"
               />
+              <input
+                type="password"
+                value={joinPassword}
+                onChange={(e) => setJoinPassword(e.target.value)}
+                placeholder="Vault password"
+                className="w-full px-3 py-2 rounded border dark:bg-gray-700 dark:border-gray-600 text-sm"
+              />
               <button
                 onClick={handleJoinVault}
-                disabled={!joinCode}
+                disabled={!joinCode || !joinPassword}
                 className="w-full px-3 py-2 bg-primary text-white rounded text-sm disabled:opacity-50"
               >
                 Join Vault
               </button>
               <button
-                onClick={() => { setShowPairing(null); setJoinCode(''); }}
+                onClick={() => { setShowPairing(null); setJoinCode(''); setJoinPassword(''); }}
                 className="w-full px-3 py-2 bg-gray-200 dark:bg-gray-600 rounded text-sm"
               >
                 Cancel

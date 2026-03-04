@@ -56,6 +56,7 @@ type PendingApproval struct {
 type PairingCode struct {
 	Code        string
 	VaultID     string
+	VaultName   string // NEW: name of vault
 	DeviceID    string
 	DeviceName  string
 	PublicKey   string
@@ -953,7 +954,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						log.Printf("[Pairing] Found valid code %s, sending validation to peer %s", code, peerID)
 
 						// Send pairing request to this peer (asking them to validate our code)
-						msg, err := p2p.CreatePairingRequestMessage(code, codeData.DeviceID, codeData.DeviceName)
+						msg, err := p2p.CreatePairingRequestMessage(code, codeData.DeviceID, codeData.DeviceName, "")
 						if err != nil {
 							log.Printf("[Pairing] Failed to create request: %v", err)
 							pairingLock.Unlock()
@@ -989,7 +990,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 						if time.Since(req.CreatedAt) < 5*time.Minute {
 							log.Printf("[Pairing] Found pending request for code %s from joining device, initiating", code)
 
-							msg, err := p2p.CreatePairingRequestMessage(code, req.DeviceID, req.DeviceName)
+							msg, err := p2p.CreatePairingRequestMessage(code, req.DeviceID, req.DeviceName, "")
 							if err != nil {
 								log.Printf("[Pairing] Failed to create request: %v", err)
 								pairingLock.Unlock()
@@ -1095,6 +1096,7 @@ func handleP2PStart(w http.ResponseWriter, r *http.Request) {
 					respMsg, err := p2p.CreatePairingResponseMessage(
 						response.Success,
 						response.Code,
+						code.VaultName, // NEW: include vault name
 						response.VaultID,
 						response.DeviceID,
 						response.DeviceName,
@@ -1523,6 +1525,7 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 									response = p2p.PairingResponsePayload{
 										Success:     true,
 										Code:        pairingReq.Code,
+										VaultName:   code.VaultName, // NEW
 										VaultID:     code.VaultID,
 										DeviceID:    code.DeviceID,
 										DeviceName:  code.DeviceName,
@@ -1531,7 +1534,7 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 									}
 								}
 
-								respMsg, err := p2p.CreatePairingResponseMessage(response.Success, response.Code, response.VaultID, response.DeviceID, response.DeviceName, response.PublicKey, response.Fingerprint, response.Error)
+								respMsg, err := p2p.CreatePairingResponseMessage(response.Success, response.Code, response.VaultName, response.VaultID, response.DeviceID, response.DeviceName, response.PublicKey, response.Fingerprint, response.Error)
 								if err != nil {
 									log.Printf("[Pairing] Failed to create response: %v", err)
 									continue
@@ -1590,6 +1593,7 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 	pairingCodes[normalizedCode] = PairingCode{
 		Code:        code,
 		VaultID:     activeVault,
+		VaultName:   vaultName, // NEW
 		DeviceID:    deviceID,
 		DeviceName:  deviceName,
 		PublicKey:   publicKey,
@@ -1611,6 +1615,7 @@ func handlePairingGenerate(w http.ResponseWriter, r *http.Request) {
 type PairingJoinRequest struct {
 	Code       string `json:"code"`
 	DeviceName string `json:"device_name"`
+	Password   string `json:"password"` // NEW: vault password for joining
 }
 
 func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
@@ -1709,7 +1714,7 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 								}
 
 								log.Printf("[Pairing] Join: Sending response to actual peer: %s", msg.FromPeer)
-								respMsg, _ := p2p.CreatePairingResponseMessage(response.Success, response.Code, "", response.DeviceID, response.DeviceName, "", "", response.Error)
+								respMsg, _ := p2p.CreatePairingResponseMessage(response.Success, response.Code, "", response.VaultID, response.DeviceID, response.DeviceName, "", "", response.Error)
 								p2pManager.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
 								continue
 							}
@@ -1802,11 +1807,12 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 
 	req.Code = strings.ToUpper(strings.ReplaceAll(req.Code, "-", ""))
 
-	log.Printf("[Pairing Join] Looking for code: '%s' via P2P", req.Code)
+	log.Printf("[Pairing Join] Looking for code: '%s' via P2P (password provided: %v)", req.Code, req.Password != "")
 
 	// Get device info for the pairing request
 	joiningDeviceID := ""
 	joiningDeviceName := req.DeviceName
+	joiningPassword := req.Password // NEW
 
 	vaultLock.Lock()
 	if vault != nil && vault.cfg != nil {
@@ -1854,7 +1860,7 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 			go func(peerID string) {
 				for attempt := 0; attempt < 10; attempt++ {
 					// Create pairing request message
-					msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName)
+					msg, err := p2p.CreatePairingRequestMessage(req.Code, joiningDeviceID, joiningDeviceName, joiningPassword)
 					if err != nil {
 						log.Printf("[Pairing Join] Failed to create message: %v", err)
 						return
@@ -1899,10 +1905,177 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 		}
 		approvalsLock.Unlock()
 
+		// NEW: Create vault if it doesn't exist (joining from scratch)
+		vaultName := response.VaultName
+		joinPassword := req.Password
+
+		log.Printf("[Pairing Join] Vault name from generator: %s", vaultName)
+
+		vaultLock.Lock()
+		if vault == nil {
+			// Need to create vault from scratch
+			log.Printf("[Pairing Join] Creating vault '%s' from scratch...", vaultName)
+
+			// Set as active vault
+			if err := config.SetActiveVault(vaultName); err != nil {
+				log.Printf("[Pairing Join] Failed to set active vault: %v", err)
+			}
+
+			// Create vault directory
+			vaultPath := config.VaultPath(vaultName)
+			if err := os.MkdirAll(vaultPath, 0700); err != nil {
+				log.Printf("[Pairing Join] Failed to create vault directory: %v", err)
+				vaultLock.Unlock()
+				jsonResponse(w, Response{Success: false, Error: "failed to create vault: " + err.Error()})
+				return
+			}
+
+			// Generate new key pair for this device
+			keyPair, err := crypto.GenerateRSAKeyPair(2048)
+			if err != nil {
+				log.Printf("[Pairing Join] Failed to generate keys: %v", err)
+				vaultLock.Unlock()
+				jsonResponse(w, Response{Success: false, Error: "failed to generate keys: " + err.Error()})
+				return
+			}
+
+			// Encrypt and save private key with password
+			salt, err := crypto.EncryptPrivateKeyAndSave(keyPair.PrivateKey, joinPassword, config.PrivateKeyPathForVault(vaultName))
+			if err != nil {
+				log.Printf("[Pairing Join] Failed to encrypt private key: %v", err)
+				vaultLock.Unlock()
+				jsonResponse(w, Response{Success: false, Error: "failed to encrypt private key: " + err.Error()})
+				return
+			}
+
+			// Save public key
+			if err := crypto.SavePublicKey(keyPair.PublicKey, config.PublicKeyPathForVault(vaultName)); err != nil {
+				log.Printf("[Pairing Join] Failed to save public key: %v", err)
+				vaultLock.Unlock()
+				jsonResponse(w, Response{Success: false, Error: "failed to save public key: " + err.Error()})
+				return
+			}
+
+			// Initialize SQLite database
+			db, err := storage.NewSQLite(config.DatabasePathForVault(vaultName))
+			if err != nil {
+				log.Printf("[Pairing Join] Failed to initialize database: %v", err)
+				vaultLock.Unlock()
+				jsonResponse(w, Response{Success: false, Error: "failed to initialize database: " + err.Error()})
+				return
+			}
+
+			// Create device entry for ourselves
+			deviceID := uuid.New().String()
+			selfDevice := models.Device{
+				ID:          deviceID,
+				Name:        joiningDeviceName,
+				PublicKey:   config.PublicKeyPathForVault(vaultName),
+				Fingerprint: crypto.GetFingerprint(keyPair.PublicKey),
+				Trusted:     true,
+				CreatedAt:   time.Now(),
+			}
+			db.UpsertDevice(&selfDevice)
+
+			// Save device config
+			cfg := &config.Config{
+				DeviceID:   deviceID,
+				DeviceName: joiningDeviceName,
+				Salt:       base64.StdEncoding.EncodeToString(salt),
+			}
+			cfgBytes, _ := json.Marshal(cfg)
+			os.WriteFile(config.VaultConfigPath(vaultName), cfgBytes, 0600)
+
+			// Create vault struct
+			vault = &Vault{
+				privateKey: keyPair,
+				storage:    db,
+				cfg:        cfg,
+				vaultName:  vaultName,
+			}
+
+			log.Printf("[Pairing Join] Created vault '%s' with device %s", vaultName, joiningDeviceName)
+		}
+		vaultLock.Unlock()
+
+		// Wait for sync data from generator (with timeout)
+		log.Printf("[Pairing Join] Waiting for vault sync from %s...", response.DeviceName)
+
+		vaultCreated := false
+		syncTimeout := time.After(30 * time.Second)
+
+		for {
+			select {
+			case msg := <-p2pManager.MessageChan():
+				log.Printf("[Pairing Join] Received message while waiting for sync: %s", msg.Type)
+
+				if msg.Type == p2p.MsgTypeSyncData {
+					var syncData p2p.SyncDataPayload
+					if err := json.Unmarshal(msg.Payload, &syncData); err != nil {
+						log.Printf("[Sync] Failed to parse sync data: %v", err)
+						continue
+					}
+
+					log.Printf("[Pairing Join] Received %d entries and %d devices from peer",
+						len(syncData.Entries), len(syncData.Devices))
+
+					// Store devices
+					for _, deviceData := range syncData.Devices {
+						device := models.Device{
+							ID:          deviceData.ID,
+							Name:        deviceData.Name,
+							Fingerprint: deviceData.Fingerprint,
+							Trusted:     deviceData.Trusted,
+						}
+						vault.storage.UpsertDevice(&device)
+						log.Printf("[Pairing Join] Stored device: %s", device.Name)
+					}
+
+					// Store entries (check if exists, then create or update)
+					for _, entryData := range syncData.Entries {
+						entry := models.PasswordEntry{
+							ID:                entryData.ID,
+							Version:           int64(entryData.Version),
+							Site:              entryData.Site,
+							Username:          entryData.Username,
+							EncryptedPassword: entryData.EncryptedPassword,
+							EncryptedAESKeys:  entryData.EncryptedAESKeys,
+							Notes:             entryData.Notes,
+							CreatedAt:         time.UnixMilli(entryData.CreatedAt),
+							UpdatedAt:         time.UnixMilli(entryData.UpdatedAt),
+						}
+
+						// Check if entry exists
+						existing, _ := vault.storage.GetEntry(entryData.ID)
+						if existing != nil {
+							vault.storage.UpdateEntry(&entry)
+							log.Printf("[Pairing Join] Updated entry: %s", entry.Site)
+						} else {
+							vault.storage.CreateEntry(&entry)
+							log.Printf("[Pairing Join] Created entry: %s", entry.Site)
+						}
+					}
+
+					vaultCreated = true
+					log.Printf("[Pairing Join] Vault sync complete!")
+					break
+				}
+
+			case <-syncTimeout:
+				log.Printf("[Pairing Join] Timeout waiting for sync data")
+				break
+			}
+
+			if vaultCreated {
+				break
+			}
+		}
+
 		jsonResponse(w, Response{Success: true, Data: map[string]interface{}{
 			"message":         "Connected to vault",
 			"device_name":     response.DeviceName,
 			"device_approved": true,
+			"vault_synced":    vaultCreated,
 		}})
 		return
 
@@ -2027,17 +2200,29 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 		})
 	}
 
-	// Send sync data to new device
-	if len(reEncryptedEntries) > 0 {
-		msg, err := p2p.CreateSyncDataMessage(reEncryptedEntries, []p2p.DeviceData{
-			{
-				ID:          deviceID,
-				Name:        deviceName,
-				Fingerprint: fingerprint,
-				Trusted:     true,
-				CreatedAt:   time.Now().UnixMilli(),
-			},
+	// Get all existing devices to send to joiner
+	devices, _ := db.ListDevices()
+	deviceList := []p2p.DeviceData{}
+
+	// Add all existing trusted devices
+	for _, d := range devices {
+		deviceList = append(deviceList, p2p.DeviceData{
+			ID:          d.ID,
+			Name:        d.Name,
+			Fingerprint: d.Fingerprint,
+			Trusted:     d.Trusted,
+			CreatedAt:   d.CreatedAt.UnixMilli(),
 		})
+		log.Printf("[Sync] Will send device info: %s (trusted: %v)", d.Name, d.Trusted)
+	}
+
+	// Wait a moment for joiner to be ready to receive
+	log.Printf("[Sync] Waiting for joiner to be ready...")
+	time.Sleep(2 * time.Second)
+
+	// Send sync data to new device
+	if len(reEncryptedEntries) > 0 || len(deviceList) > 0 {
+		msg, err := p2p.CreateSyncDataMessage(reEncryptedEntries, deviceList)
 		if err != nil {
 			log.Printf("[Sync] Failed to create sync message: %v", err)
 			return
@@ -2052,7 +2237,8 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 			if err != nil {
 				log.Printf("[Sync] Failed to send sync data: %v", err)
 			} else {
-				log.Printf("[Sync] Sent %d entries to device %s", len(reEncryptedEntries), deviceName)
+				log.Printf("[Sync] Sent %d entries and %d devices to device %s",
+					len(reEncryptedEntries), len(deviceList), deviceName)
 			}
 		}
 		p2pLock.Unlock()
