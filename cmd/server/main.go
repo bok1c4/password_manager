@@ -1511,9 +1511,7 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 						case msg := <-p2pManager.PairingResponseChan():
 							log.Printf("[P2P] Join: Pairing response from %s", msg.FromPeer)
 							handleJoinerPairingResponse(msg)
-						case msg := <-p2pManager.SyncDataChan():
-							log.Printf("[P2P] Join: Sync data from %s", msg.FromPeer)
-							handleJoinerSyncData(msg)
+							// NOTE: Don't handle SyncDataChan here - it's handled after vault is created
 						}
 					}
 				}()
@@ -1744,8 +1742,13 @@ func handlePairingJoin(w http.ResponseWriter, r *http.Request) {
 				vaultName:  vaultName,
 			}
 
-			log.Printf("[Pairing Join] Created vault '%s' with device %s", vaultName, joiningDeviceName)
+			log.Printf("[Pairing Join] Created vault '%s' with device %s, storage=%v", vaultName, joiningDeviceName, vault.storage != nil)
 		}
+		vaultLock.Unlock()
+
+		// Verify vault is ready
+		vaultLock.Lock()
+		log.Printf("[Pairing Join] After vault creation: vault=%v, storage=%v", vault != nil, vault != nil && vault.storage != nil)
 		vaultLock.Unlock()
 
 		// Find the generator's peer ID from connected peers
@@ -2375,47 +2378,55 @@ func handleJoinerSyncData(msg p2p.ReceivedMessage) {
 	log.Printf("[Sync] Received %d entries from peer", len(syncData.Entries))
 
 	vaultLock.Lock()
-	if vault != nil && vault.storage != nil {
-		for _, entryData := range syncData.Entries {
-			entry := models.PasswordEntry{
-				ID:                entryData.ID,
-				Version:           int64(entryData.Version),
-				Site:              entryData.Site,
-				Username:          entryData.Username,
-				EncryptedPassword: entryData.EncryptedPassword,
-				EncryptedAESKeys:  entryData.EncryptedAESKeys,
-				Notes:             entryData.Notes,
-				CreatedAt:         time.UnixMilli(entryData.CreatedAt),
-				UpdatedAt:         time.UnixMilli(entryData.UpdatedAt),
-			}
+	defer vaultLock.Unlock()
 
-			existing, _ := vault.storage.GetEntry(entry.ID)
-			if existing != nil {
-				vault.storage.UpdateEntry(&entry)
-				log.Printf("[Sync] Updated entry: %s", entry.Site)
-			} else {
-				vault.storage.CreateEntry(&entry)
-				log.Printf("[Sync] Created entry: %s", entry.Site)
-			}
+	log.Printf("[Sync] Joiner: vault=%v, storage=%v, privateKey=%v",
+		vault != nil,
+		vault != nil && vault.storage != nil,
+		vault != nil && vault.privateKey != nil)
+
+	if vault == nil {
+		log.Printf("[Sync] ERROR: vault is nil - need to create/initialize vault first")
+		return
+	}
+	if vault.storage == nil {
+		log.Printf("[Sync] ERROR: vault.storage is nil - vault not unlocked")
+		return
+	}
+
+	for _, entryData := range syncData.Entries {
+		entry := models.PasswordEntry{
+			ID:                entryData.ID,
+			Version:           int64(entryData.Version),
+			Site:              entryData.Site,
+			Username:          entryData.Username,
+			EncryptedPassword: entryData.EncryptedPassword,
+			EncryptedAESKeys:  entryData.EncryptedAESKeys,
+			Notes:             entryData.Notes,
+			CreatedAt:         time.UnixMilli(entryData.CreatedAt),
+			UpdatedAt:         time.UnixMilli(entryData.UpdatedAt),
 		}
 
-		for _, deviceData := range syncData.Devices {
-			device := models.Device{
-				ID:          deviceData.ID,
-				Name:        deviceData.Name,
-				PublicKey:   deviceData.PublicKey,
-				Fingerprint: deviceData.Fingerprint,
-				Trusted:     deviceData.Trusted,
-				CreatedAt:   time.UnixMilli(deviceData.CreatedAt),
-			}
-			vault.storage.UpsertDevice(&device)
-			log.Printf("[Sync] Added device: %s (public_key: %s)", device.Name, func() string {
-				if len(device.PublicKey) > 50 {
-					return device.PublicKey[:50] + "..."
-				}
-				return device.PublicKey
-			}())
+		existing, _ := vault.storage.GetEntry(entry.ID)
+		if existing != nil {
+			vault.storage.UpdateEntry(&entry)
+			log.Printf("[Sync] Updated entry: %s", entry.Site)
+		} else {
+			vault.storage.CreateEntry(&entry)
+			log.Printf("[Sync] Created entry: %s", entry.Site)
 		}
 	}
-	vaultLock.Unlock()
+
+	for _, deviceData := range syncData.Devices {
+		device := models.Device{
+			ID:          deviceData.ID,
+			Name:        deviceData.Name,
+			PublicKey:   deviceData.PublicKey,
+			Fingerprint: deviceData.Fingerprint,
+			Trusted:     deviceData.Trusted,
+			CreatedAt:   time.UnixMilli(deviceData.CreatedAt),
+		}
+		vault.storage.UpsertDevice(&device)
+		log.Printf("[Sync] Added device: %s", device.Name)
+	}
 }
