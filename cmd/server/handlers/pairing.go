@@ -210,12 +210,7 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 							return
 						case peer := <-manager.ConnectedChan():
 							log.Printf("[P2P] Join: Received connected event: %s", peer.ID)
-							h.state.AddPendingApproval(peer.ID, state.PendingApproval{
-								DeviceID:    peer.ID,
-								DeviceName:  peer.Name,
-								Status:      "pending",
-								ConnectedAt: time.Now(),
-							})
+							// Joiner does NOT track pending approvals - only generator does
 						case peerID := <-manager.DisconnectedChan():
 							log.Printf("[P2P] Join: Peer disconnected: %s", peerID)
 						case msg := <-manager.PairingRequestChan():
@@ -336,13 +331,7 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("[Pairing Join] Received valid response from: %s", response.DeviceName)
 
-		h.state.AddPendingApproval(response.DeviceID, state.PendingApproval{
-			DeviceID:    response.DeviceID,
-			DeviceName:  response.DeviceName,
-			PublicKey:   response.PublicKey,
-			Fingerprint: response.Fingerprint,
-			Status:      "paired",
-		})
+		// Joiner does NOT add generator to pending approvals - trust is established via pairing code
 
 		vaultName := response.VaultName
 		joinPassword := req.Password
@@ -948,6 +937,28 @@ func (h *PairingHandlers) HandleJoinerSyncData(msg p2p.ReceivedMessage) {
 	}
 
 	log.Printf("[Sync] Sync complete: %d entries, %d devices", len(syncData.Entries), len(syncData.Devices))
+
+	// Send SYNC_ACK to generator to confirm successful sync
+	pm, _ := h.state.GetP2PManager()
+	if pm != nil {
+		vault, _ := h.state.GetVault()
+		if vault != nil && vault.Config != nil {
+			ackMsg, err := p2p.CreateSyncAckMessage(vault.Config.DeviceID, true)
+			if err != nil {
+				log.Printf("[Sync] Failed to create SYNC_ACK message: %v", err)
+			} else {
+				err = pm.SendMessage(msg.FromPeer, p2p.SyncMessage{
+					Type:    ackMsg.Type,
+					Payload: ackMsg.Payload,
+				})
+				if err != nil {
+					log.Printf("[Sync] Failed to send SYNC_ACK: %v", err)
+				} else {
+					log.Printf("[Sync] Sent SYNC_ACK to generator")
+				}
+			}
+		}
+	}
 }
 
 func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerprint string) {
@@ -1075,14 +1086,22 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 	log.Printf("[Sync] Waiting for joiner to be ready...")
 	time.Sleep(2 * time.Second)
 
-	log.Printf("[Sync] Re-encryption complete, waiting for joiner to request sync...")
+	log.Printf("[Sync] Re-encryption complete, waiting for sync acknowledgment...")
 
-	// Clean up P2P after a delay to allow sync to complete
-	go func() {
-		time.Sleep(30 * time.Second) // Wait for sync and some buffer time
-		h.state.StopP2P()
-		log.Printf("[Sync] P2P stopped after re-encryption and sync window")
-	}()
+	// Wait for SYNC_ACK from joiner before stopping P2P
+	pm, _ := h.state.GetP2PManager()
+	if pm != nil {
+		select {
+		case <-pm.SyncAckChan():
+			log.Printf("[Sync] Received sync acknowledgment from joiner")
+		case <-time.After(30 * time.Second):
+			log.Printf("[Sync] Timeout waiting for sync acknowledgment, proceeding with cleanup")
+		}
+	}
+
+	// Clean up P2P after sync confirmation
+	h.state.StopP2P()
+	log.Printf("[Sync] P2P stopped after re-encryption and sync")
 }
 
 func min(a, b int) int {
