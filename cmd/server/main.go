@@ -360,11 +360,13 @@ func handleUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vault = &Vault{
-		privateKey: &crypto.KeyPair{PrivateKey: privateKey},
+		privateKey: &crypto.KeyPair{PrivateKey: privateKey, PublicKey: &privateKey.PublicKey},
 		storage:    db,
 		cfg:        vaultConfig,
 		vaultName:  activeVault,
 	}
+
+	log.Printf("[handleUnlock] Vault unlocked, public key available: %v", vault.privateKey.PublicKey != nil)
 
 	jsonResponse(w, Response{Success: true})
 }
@@ -450,14 +452,18 @@ func handleAddEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	devices, _ := vault.storage.ListDevices()
+	log.Printf("[AddEntry] Found %d devices in storage", len(devices))
 	var trustedDevices []models.Device
 	for _, d := range devices {
+		log.Printf("[AddEntry] Device: id=%s, name=%s, trusted=%v, pubkey_len=%d",
+			d.ID, d.Name, d.Trusted, len(d.PublicKey))
 		if d.Trusted {
 			trustedDevices = append(trustedDevices, d)
 		}
 	}
 
 	if len(trustedDevices) == 0 {
+		log.Printf("[AddEntry] No trusted devices found, using fallback device")
 		activeVault, _ := config.GetActiveVault()
 		trustedDevices = append(trustedDevices, models.Device{
 			ID:          vault.cfg.DeviceID,
@@ -466,9 +472,12 @@ func handleAddEntry(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	log.Printf("[AddEntry] Encrypting password for %d trusted devices", len(trustedDevices))
 	getPublicKey := func(fingerprint string) (*rsa.PublicKey, error) {
 		for _, d := range trustedDevices {
 			if d.Fingerprint == fingerprint {
+				log.Printf("[AddEntry] Loading public key for %s, pubkey starts with: %.30s",
+					fingerprint[:min(20, len(fingerprint))], d.PublicKey)
 				if strings.HasPrefix(d.PublicKey, "-----BEGIN") {
 					return crypto.ParsePublicKey(d.PublicKey)
 				}
@@ -480,9 +489,13 @@ func handleAddEntry(w http.ResponseWriter, r *http.Request) {
 
 	encrypted, err := crypto.HybridEncrypt(req.Password, trustedDevices, getPublicKey)
 	if err != nil {
+		log.Printf("[AddEntry] Encryption failed: %v", err)
 		jsonResponse(w, Response{Success: false, Error: "failed to encrypt: " + err.Error()})
 		return
 	}
+
+	log.Printf("[AddEntry] Encryption successful, encrypted password length: %d, keys count: %d",
+		len(encrypted.EncryptedPassword), len(encrypted.EncryptedAESKeys))
 
 	entry := models.PasswordEntry{
 		ID:                uuid.New().String(),
@@ -665,6 +678,12 @@ func handleGetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get our fingerprint to check if we have a key
+	if vault.privateKey == nil || vault.privateKey.PublicKey == nil {
+		log.Printf("[GetPassword] ERROR: vault.privateKey.PublicKey is nil! Cannot decrypt.")
+		jsonResponse(w, Response{Success: false, Error: "vault not properly initialized - public key missing"})
+		return
+	}
+
 	ourFingerprint := crypto.GetFingerprint(vault.privateKey.PublicKey)
 	log.Printf("[GetPassword] Our device fingerprint: %s...", ourFingerprint[:min(20, len(ourFingerprint))])
 
