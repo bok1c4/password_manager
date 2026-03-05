@@ -632,9 +632,8 @@ pub fn pairing_join(
         "password": password
     })
     .to_string();
-    let token = state.token.lock().map_err(|e| e.to_string())?;
-    let token_str = token.as_deref();
-    let result = api_call("/pairing/join", "POST", Some(&body), token_str)?;
+    // No token needed - joining is a public endpoint
+    let result = api_call("/pairing/join", "POST", Some(&body), None)?;
     Ok(result.success)
 }
 

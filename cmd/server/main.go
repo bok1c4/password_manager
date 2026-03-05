@@ -140,7 +140,7 @@ func main() {
 	http.HandleFunc("/api/p2p/sync", auth(p2pHandlers.Sync))
 
 	http.HandleFunc("/api/pairing/generate", auth(pairingHandlers.Generate))
-	http.HandleFunc("/api/pairing/join", auth(pairingHandlers.Join))
+	http.HandleFunc("/api/pairing/join", cors(pairingHandlers.Join)) // Public - joining doesn't require auth
 	http.HandleFunc("/api/pairing/status", auth(pairingHandlers.Status))
 
 	port, err := findAvailablePort()
