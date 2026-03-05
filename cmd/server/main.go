@@ -728,7 +728,15 @@ func handleGetDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	devices, _ := vault.storage.ListDevices()
+	devices, err := vault.storage.ListDevices()
+	if err != nil {
+		log.Printf("[handleGetDevices] Error listing devices: %v", err)
+		jsonResponse(w, Response{Success: true, Data: []struct{}{}})
+		return
+	}
+
+	log.Printf("[handleGetDevices] Found %d devices", len(devices))
+
 	type DeviceResp struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
@@ -736,14 +744,15 @@ func handleGetDevices(w http.ResponseWriter, r *http.Request) {
 		Trusted     bool   `json:"trusted"`
 	}
 
-	result := make([]DeviceResp, len(devices))
-	for i, d := range devices {
-		result[i] = DeviceResp{
+	result := make([]DeviceResp, 0, len(devices))
+	for _, d := range devices {
+		result = append(result, DeviceResp{
 			ID:          d.ID,
 			Name:        d.Name,
 			Fingerprint: d.Fingerprint,
 			Trusted:     d.Trusted,
-		}
+		})
+		log.Printf("[handleGetDevices] Device: id=%s, name=%s, trusted=%v", d.ID, d.Name, d.Trusted)
 	}
 
 	jsonResponse(w, Response{Success: true, Data: result})
@@ -2516,10 +2525,24 @@ func handleJoinerSyncData(msg p2p.ReceivedMessage) {
 	}
 
 	for _, deviceData := range syncData.Devices {
-		// Check if device already exists to avoid duplicates
+		// Check if device already exists by ID OR fingerprint to avoid duplicates
 		existingDevice, _ := vault.storage.GetDevice(deviceData.ID)
 		if existingDevice != nil {
-			log.Printf("[Sync] Device already exists: %s", deviceData.Name)
+			log.Printf("[Sync] Device already exists (by ID): %s", deviceData.Name)
+			continue
+		}
+
+		// Also check all devices for matching fingerprint
+		allDevices, _ := vault.storage.ListDevices()
+		deviceExists := false
+		for _, d := range allDevices {
+			if d.Fingerprint == deviceData.Fingerprint {
+				log.Printf("[Sync] Device already exists (by fingerprint): %s", deviceData.Name)
+				deviceExists = true
+				break
+			}
+		}
+		if deviceExists {
 			continue
 		}
 
