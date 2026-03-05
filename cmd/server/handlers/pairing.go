@@ -294,6 +294,8 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 
 		if !vaultInitialized {
 			log.Printf("[Pairing Join] ERROR: Vault not initialized on joining device. Please initialize your vault first before pairing.")
+			api.Error(w, http.StatusBadRequest, "VAULT_NOT_INITIALIZED", "Please initialize your vault before joining")
+			return
 		}
 
 		for _, peer := range peers {
@@ -398,7 +400,10 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			deviceID := uuid.New().String()
+			deviceID := joiningDeviceID
+			if deviceID == "" {
+				deviceID = uuid.New().String()
+			}
 			publicKeyBytes, _ := os.ReadFile(config.PublicKeyPathForVault(vaultName))
 			selfDevice := models.Device{
 				ID:          deviceID,
