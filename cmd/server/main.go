@@ -1974,19 +1974,6 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 		Trusted:     true,
 	}
 
-	getPublicKey := func(fp string) (*rsa.PublicKey, error) {
-		if fp == fingerprint {
-			return crypto.ParsePublicKey(publicKey)
-		}
-		devices, _ := db.ListDevices()
-		for _, d := range devices {
-			if d.Fingerprint == fp {
-				return crypto.ParsePublicKey(d.PublicKey)
-			}
-		}
-		return nil, fmt.Errorf("device not found")
-	}
-
 	reEncryptedEntries := []p2p.EntryData{}
 
 	for i := range entries {
@@ -2000,21 +1987,47 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 
 		log.Printf("[Sync] Decrypted password for entry %s", entry.Site)
 
-		// Re-encrypt for new device
-		encrypted, err := crypto.HybridEncrypt(password, []models.Device{newDevice}, getPublicKey)
+		// Get existing device for encryption (generator)
+		generatorDevice, _ := db.GetDevice(cfg.DeviceID)
+
+		// Re-encrypt for BOTH generator AND new device
+		allDevices := []models.Device{*generatorDevice, newDevice}
+		allGetPublicKey := func(fp string) (*rsa.PublicKey, error) {
+			if fp == fingerprint {
+				return crypto.ParsePublicKey(publicKey) // joiner
+			}
+			if fp == generatorDevice.Fingerprint {
+				return crypto.ParsePublicKey(generatorDevice.PublicKey) // generator
+			}
+			devices, _ := db.ListDevices()
+			for _, d := range devices {
+				if d.Fingerprint == fp {
+					return crypto.ParsePublicKey(d.PublicKey)
+				}
+			}
+			return nil, fmt.Errorf("device not found")
+		}
+
+		encrypted, err := crypto.HybridEncrypt(password, allDevices, allGetPublicKey)
 		if err != nil {
-			log.Printf("[Sync] Failed to re-encrypt for device %s: %v", deviceID, err)
+			log.Printf("[Sync] Failed to re-encrypt for both devices: %v", err)
 			continue
 		}
 
-		log.Printf("[Sync] Re-encrypted for new device")
+		log.Printf("[Sync] Re-encrypted for both generator and new device")
 
-		// Update BOTH encrypted password AND the key - use FINGERPRINT as key!
-		entry.EncryptedPassword = encrypted.EncryptedPassword // NEW: update encrypted password!
+		// Keep original generator's encrypted password AND add joiner's encrypted password
+		// We need to store BOTH encrypted passwords - this requires a data model change
+		// For now, let's just keep the generator's version and add the joiner key
+		// The joiner will get their password via sync, not local decryption
+
+		// Just add the joiner's key - keep original encrypted password for generator
 		entry.EncryptedAESKeys[fingerprint] = encrypted.EncryptedAESKeys[fingerprint]
 		entry.Version++
 		entry.UpdatedAt = time.Now()
 		entry.UpdatedBy = cfg.DeviceID
+
+		log.Printf("[Sync] Added key for new device, kept original encrypted password")
 
 		log.Printf("[Sync] Re-encrypted entry: %s (%s) - key for fingerprint: %s...",
 			entry.Site, entry.Username, fingerprint[:min(20, len(fingerprint))])
