@@ -393,8 +393,15 @@ export const useVault = create<VaultState>((set, get) => ({
   },
 
   pairingJoin: async (code: string, deviceName: string, password: string) => {
-    await api.pairingJoin(code, deviceName, password);
-    await get().fetchDevices();
+    try {
+      await api.pairingJoin(code, deviceName, password);
+      // After joining, we need to unlock the vault
+      await get().unlock(password);
+      await get().fetchDevices();
+    } catch (e) {
+      console.error('pairingJoin failed:', e);
+      throw e;
+    }
   },
 
   clearError: () => {

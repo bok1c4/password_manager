@@ -2549,8 +2549,11 @@ func handleJoinerSyncData(msg p2p.ReceivedMessage) {
 		allDevices, _ := vault.storage.ListDevices()
 		deviceExists := false
 		for _, d := range allDevices {
+			log.Printf("[Sync] Comparing fingerprint: %s (sync) vs %s (local)",
+				deviceData.Fingerprint[:min(30, len(deviceData.Fingerprint))],
+				d.Fingerprint[:min(30, len(d.Fingerprint))])
 			if d.Fingerprint == deviceData.Fingerprint {
-				log.Printf("[Sync] Device already exists (by fingerprint): %s", deviceData.Name)
+				log.Printf("[Sync] Device already exists (by fingerprint): %s (ID=%s)", deviceData.Name, d.ID)
 				deviceExists = true
 				break
 			}

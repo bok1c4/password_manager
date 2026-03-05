@@ -59,14 +59,17 @@ export function Settings() {
       <section>
         <h2 className="text-lg font-bold mb-3">Devices</h2>
         <div className="space-y-2">
-          {devices.map((device) => (
+          {(!devices || devices.length === 0) && (
+            <p className="text-gray-500 text-sm">No devices found</p>
+          )}
+          {devices?.map((device) => (
             <div
-              key={device.id}
+              key={device.id || 'unknown'}
               className="flex items-center justify-between p-3 bg-white dark:bg-surface-dark rounded"
             >
               <div>
-                <p className="font-medium">{device.name}</p>
-                <p className="text-xs text-gray-500">{device.id}</p>
+                <p className="font-medium">{device.name || 'Unknown'}</p>
+                <p className="text-xs text-gray-500">{device.id || 'No ID'}</p>
               </div>
               {device.trusted ? (
                 <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
