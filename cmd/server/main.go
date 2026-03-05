@@ -1998,6 +1998,8 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 			continue
 		}
 
+		log.Printf("[Sync] Decrypted password for entry %s", entry.Site)
+
 		// Re-encrypt for new device
 		encrypted, err := crypto.HybridEncrypt(password, []models.Device{newDevice}, getPublicKey)
 		if err != nil {
@@ -2005,7 +2007,10 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 			continue
 		}
 
-		// Update entry with new encrypted key - use FINGERPRINT as key, not deviceID!
+		log.Printf("[Sync] Re-encrypted for new device")
+
+		// Update BOTH encrypted password AND the key - use FINGERPRINT as key!
+		entry.EncryptedPassword = encrypted.EncryptedPassword // NEW: update encrypted password!
 		entry.EncryptedAESKeys[fingerprint] = encrypted.EncryptedAESKeys[fingerprint]
 		entry.Version++
 		entry.UpdatedAt = time.Now()
