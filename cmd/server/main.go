@@ -2005,18 +2005,19 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 			continue
 		}
 
-		// Update entry with new encrypted key
-		entry.EncryptedAESKeys[deviceID] = encrypted.EncryptedAESKeys[deviceID]
+		// Update entry with new encrypted key - use FINGERPRINT as key, not deviceID!
+		entry.EncryptedAESKeys[fingerprint] = encrypted.EncryptedAESKeys[fingerprint]
 		entry.Version++
 		entry.UpdatedAt = time.Now()
 		entry.UpdatedBy = cfg.DeviceID
+
+		log.Printf("[Sync] Re-encrypted entry: %s (%s) - key for fingerprint: %s...",
+			entry.Site, entry.Username, fingerprint[:min(20, len(fingerprint))])
 
 		if err := db.UpdateEntry(entry); err != nil {
 			log.Printf("[Sync] Failed to update entry %s: %v", entry.ID, err)
 			continue
 		}
-
-		log.Printf("[Sync] Re-encrypted entry: %s (%s)", entry.Site, entry.Username)
 
 		// Add to sync data
 		reEncryptedEntries = append(reEncryptedEntries, p2p.EntryData{
