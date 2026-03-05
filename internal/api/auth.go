@@ -64,3 +64,9 @@ func (a *AuthManager) CleanupExpiredTokens() {
 		}
 	}
 }
+
+func (a *AuthManager) InvalidateToken(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.tokens, token)
+}

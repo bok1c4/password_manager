@@ -8,6 +8,7 @@ import (
 
 	"github.com/bok1c4/pwman/internal/api"
 	"github.com/bok1c4/pwman/internal/config"
+	"github.com/bok1c4/pwman/internal/crypto"
 	"github.com/bok1c4/pwman/internal/state"
 )
 
@@ -141,7 +142,8 @@ func (h *VaultHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *VaultHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	type DeleteRequest struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		Password string `json:"password"`
 	}
 
 	var req DeleteRequest
@@ -152,6 +154,11 @@ func (h *VaultHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if req.Name == "" {
 		api.BadRequest(w, "vault name required")
+		return
+	}
+
+	if req.Password == "" {
+		api.BadRequest(w, "password required to delete vault")
 		return
 	}
 
@@ -171,6 +178,20 @@ func (h *VaultHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		api.NotFound(w, "vault not found")
+		return
+	}
+
+	// Verify password before allowing deletion
+	vaultConfig, err := config.LoadVaultConfig(req.Name)
+	if err != nil || vaultConfig == nil || vaultConfig.DeviceID == "" {
+		api.BadRequest(w, "vault not initialized")
+		return
+	}
+
+	privateKeyPath := config.PrivateKeyPathForVault(req.Name)
+	_, err = crypto.LoadAndDecryptPrivateKey(req.Password, privateKeyPath)
+	if err != nil {
+		api.Unauthorized(w, "incorrect password")
 		return
 	}
 

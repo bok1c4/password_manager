@@ -1,11 +1,10 @@
 import { create } from 'zustand';
-import { api } from '../lib/api';
+import { VaultAPI } from '../lib/api';
 
 export interface Entry {
   id: string;
   site: string;
   username: string;
-  password?: string;
   encrypted_password?: string;
   notes?: string;
   created_at?: string;
@@ -15,10 +14,8 @@ export interface Entry {
 export interface Device {
   id: string;
   name: string;
-  public_key?: string;
-  fingerprint?: string;
+  fingerprint: string;
   trusted: boolean;
-  created_at?: string;
 }
 
 export interface VaultInfo {
@@ -63,7 +60,7 @@ interface VaultState {
   fetchVaults: () => Promise<void>;
   switchVault: (vault: string) => Promise<void>;
   createVault: (name: string) => Promise<void>;
-  deleteVault: (name: string) => Promise<void>;
+  deleteVault: (name: string, password: string) => Promise<void>;
   initVault: (name: string, password: string, vault?: string) => Promise<void>;
   unlock: (password: string) => Promise<void>;
   lock: () => Promise<void>;
@@ -104,9 +101,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   checkInitialized: async () => {
     try {
-      const result = await api.isInitialized();
-      const data = result.data;
-      set({ initialized: data.initialized });
+      const initialized = await VaultAPI.isInitialized();
+      set({ initialized });
       await get().fetchVaults();
     } catch (e) {
       console.error('Failed to check initialized:', e);
@@ -115,8 +111,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   fetchVaults: async () => {
     try {
-      const result = await api.getVaults();
-      set({ vaults: result.data, activeVault: result.data.find((v: VaultInfo) => v.active)?.name || '' });
+      const vaults = await VaultAPI.getVaults();
+      set({ vaults, activeVault: vaults.find((v: VaultInfo) => v.active)?.name || '' });
     } catch (e) {
       console.error('Failed to fetch vaults:', e);
     }
@@ -125,11 +121,37 @@ export const useVault = create<VaultState>((set, get) => ({
   switchVault: async (vault: string) => {
     set({ loading: true, error: null });
     try {
-      await api.useVault(vault);
-      set({ activeVault: vault, unlocked: false, entries: [], devices: [] });
+      // First lock if currently unlocked to ensure clean state
+      if (get().unlocked) {
+        await VaultAPI.lockVault();
+      }
+      
+      await VaultAPI.useVault(vault);
+      
+      // Clear all vault-related state
+      set({ 
+        activeVault: vault, 
+        unlocked: false, 
+        initialized: false,
+        entries: [], 
+        devices: [],
+        error: null 
+      });
+      
+      // Verify the switch worked by fetching vaults
       await get().fetchVaults();
+      
+      // Double-check the active vault matches
+      const currentVaults = get().vaults;
+      const switchedVault = currentVaults.find(v => v.name === vault);
+      if (!switchedVault?.active) {
+        throw new Error("Vault switch verification failed");
+      }
     } catch (e: any) {
       set({ error: e.toString() });
+      // Re-fetch to ensure we have correct state
+      await get().fetchVaults();
+      throw e;
     } finally {
       set({ loading: false });
     }
@@ -138,7 +160,7 @@ export const useVault = create<VaultState>((set, get) => ({
   createVault: async (name: string) => {
     set({ loading: true, error: null });
     try {
-      await api.createVault(name);
+      await VaultAPI.createVault(name);
       set({ activeVault: '', unlocked: false, entries: [], devices: [], initialized: false });
       await get().fetchVaults();
     } catch (e: any) {
@@ -148,10 +170,10 @@ export const useVault = create<VaultState>((set, get) => ({
     }
   },
 
-  deleteVault: async (name: string) => {
+  deleteVault: async (name: string, password: string) => {
     set({ loading: true, error: null });
     try {
-      await api.deleteVault(name, true);
+      await VaultAPI.deleteVault(name, password);
       await get().fetchVaults();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -163,8 +185,7 @@ export const useVault = create<VaultState>((set, get) => ({
   initVault: async (name: string, password: string, vault?: string) => {
     set({ loading: true, error: null });
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('init_vault', { name, password, vault });
+      await VaultAPI.initVault(name, password, vault);
       set({ initialized: true });
       await get().fetchVaults();
       await get().unlock(password);
@@ -178,7 +199,7 @@ export const useVault = create<VaultState>((set, get) => ({
   unlock: async (password: string) => {
     set({ loading: true, error: null });
     try {
-      await api.unlock(password);
+      await VaultAPI.unlockVault(password);
       set({ unlocked: true, error: null });
       await get().fetchEntries();
       await get().fetchDevices();
@@ -190,18 +211,30 @@ export const useVault = create<VaultState>((set, get) => ({
   },
 
   lock: async () => {
+    set({ loading: true, error: null });
     try {
-      await api.lock();
-      set({ unlocked: false, entries: [], devices: [] });
-    } catch (e) {
+      await VaultAPI.lockVault();
+      // Clear all sensitive state
+      set({ 
+        unlocked: false, 
+        entries: [], 
+        devices: [],
+        error: null 
+      });
+    } catch (e: any) {
       console.error('Failed to lock:', e);
+      set({ error: e.toString() });
+      // Even if server call fails, clear local state for security
+      set({ unlocked: false, entries: [], devices: [] });
+    } finally {
+      set({ loading: false });
     }
   },
 
   fetchEntries: async () => {
     try {
-      const result = await api.getEntries();
-      set({ entries: result.data || [] });
+      const entries = await VaultAPI.getEntries();
+      set({ entries: entries || [] });
     } catch (e) {
       console.error('Failed to fetch entries:', e);
       set({ entries: [], error: 'Failed to fetch entries. Make sure the server is running.' });
@@ -211,7 +244,7 @@ export const useVault = create<VaultState>((set, get) => ({
   addEntry: async (site: string, username: string, password: string, notes: string) => {
     set({ loading: true, error: null });
     try {
-      await api.addEntry(site, username, password, notes);
+      await VaultAPI.addEntry(site, username, password, notes);
       await get().fetchEntries();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -223,7 +256,7 @@ export const useVault = create<VaultState>((set, get) => ({
   updateEntry: async (id: string, site: string, username: string, password: string, notes: string) => {
     set({ loading: true, error: null });
     try {
-      await api.updateEntry(id, site, username, password, notes);
+      await VaultAPI.updateEntry(id, site, username, password, notes);
       await get().fetchEntries();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -235,7 +268,7 @@ export const useVault = create<VaultState>((set, get) => ({
   deleteEntry: async (id: string) => {
     set({ loading: true, error: null });
     try {
-      await api.deleteEntry(id);
+      await VaultAPI.deleteEntry(id);
       await get().fetchEntries();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -246,8 +279,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   getPassword: async (id: string): Promise<string> => {
     try {
-      const result = await api.getPassword(id);
-      return result.data.password;
+      const password = await VaultAPI.getPassword(id);
+      return password;
     } catch (e) {
       console.error('Failed to get password:', e);
       throw e;
@@ -256,8 +289,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   fetchDevices: async () => {
     try {
-      const result = await api.getDevices();
-      set({ devices: result.data || [] });
+      const devices = await VaultAPI.getDevices();
+      set({ devices: devices || [] });
     } catch (e) {
       console.error('Failed to fetch devices:', e);
     }
@@ -265,8 +298,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   generatePassword: async (length: number): Promise<string> => {
     try {
-      const result = await api.generatePassword(length);
-      return result.data.password;
+      const password = await VaultAPI.generatePassword(length);
+      return password;
     } catch (e) {
       console.error('Failed to generate password:', e);
       throw e;
@@ -275,9 +308,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   fetchP2PStatus: async () => {
     try {
-      const result = await api.p2pStatus();
-      const data = result.data;
-      set({ p2pStatus: { running: data.running, peer_id: data.peer_id } });
+      const running = await VaultAPI.p2pStatus();
+      set({ p2pStatus: { running, peer_id: null } });
     } catch (e) {
       console.error('Failed to fetch P2P status:', e);
     }
@@ -286,7 +318,7 @@ export const useVault = create<VaultState>((set, get) => ({
   startP2P: async () => {
     set({ loading: true, error: null });
     try {
-      await api.p2pStart();
+      await VaultAPI.p2pStart();
       await get().fetchP2PStatus();
       await get().fetchPeers();
     } catch (e: any) {
@@ -299,7 +331,7 @@ export const useVault = create<VaultState>((set, get) => ({
   stopP2P: async () => {
     set({ loading: true, error: null });
     try {
-      await api.p2pStop();
+      await VaultAPI.p2pStop();
       set({ p2pStatus: { running: false, peer_id: null }, peers: [] });
     } catch (e: any) {
       set({ error: e.toString() });
@@ -311,7 +343,7 @@ export const useVault = create<VaultState>((set, get) => ({
   connectPeer: async (address: string) => {
     set({ loading: true, error: null });
     try {
-      await api.p2pConnect(address);
+      await VaultAPI.p2pConnect(address);
       await get().fetchPeers();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -323,7 +355,7 @@ export const useVault = create<VaultState>((set, get) => ({
   disconnectPeer: async (peerId: string) => {
     set({ loading: true, error: null });
     try {
-      await api.p2pDisconnect(peerId);
+      await VaultAPI.p2pDisconnect(peerId);
       await get().fetchPeers();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -334,8 +366,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   fetchPeers: async () => {
     try {
-      const result = await api.p2pPeers();
-      set({ peers: result.data || [] });
+      const peers = await VaultAPI.p2pPeers();
+      set({ peers: peers || [] });
     } catch (e) {
       console.error('Failed to fetch peers:', e);
     }
@@ -343,8 +375,8 @@ export const useVault = create<VaultState>((set, get) => ({
 
   fetchApprovals: async () => {
     try {
-      const result = await api.p2pApprovals();
-      set({ approvals: result.data || [] });
+      const approvals = await VaultAPI.p2pApprovals();
+      set({ approvals: approvals || [] });
     } catch (e) {
       console.error('Failed to fetch approvals:', e);
     }
@@ -353,7 +385,7 @@ export const useVault = create<VaultState>((set, get) => ({
   approveDevice: async (deviceId: string) => {
     set({ loading: true, error: null });
     try {
-      await api.p2pApprove(deviceId);
+      await VaultAPI.p2pApprove(deviceId);
       await get().fetchApprovals();
       await get().fetchDevices();
     } catch (e: any) {
@@ -366,7 +398,7 @@ export const useVault = create<VaultState>((set, get) => ({
   rejectDevice: async (deviceId: string, reason: string) => {
     set({ loading: true, error: null });
     try {
-      await api.p2pReject(deviceId, reason);
+      await VaultAPI.p2pReject(deviceId, reason);
       await get().fetchApprovals();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -378,7 +410,7 @@ export const useVault = create<VaultState>((set, get) => ({
   p2pSync: async (fullSync: boolean = false) => {
     set({ loading: true, error: null });
     try {
-      await api.p2pSync(fullSync);
+      await VaultAPI.p2pSync(fullSync);
       await get().fetchEntries();
     } catch (e: any) {
       set({ error: e.toString() });
@@ -388,13 +420,13 @@ export const useVault = create<VaultState>((set, get) => ({
   },
 
   pairingGenerate: async () => {
-    const result = await api.pairingGenerate();
-    return result.data;
+    const data = await VaultAPI.pairingGenerate();
+    return data;
   },
 
   pairingJoin: async (code: string, deviceName: string, password: string) => {
     try {
-      await api.pairingJoin(code, deviceName, password);
+      await VaultAPI.pairingJoin(code, deviceName, password);
       // After joining, we need to unlock the vault
       await get().unlock(password);
       await get().fetchDevices();

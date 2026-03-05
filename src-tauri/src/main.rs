@@ -20,7 +20,6 @@ fn main() {
             commands::lock_vault,
             commands::is_unlocked,
             commands::get_entries,
-            commands::get_entry,
             commands::add_entry,
             commands::update_entry,
             commands::delete_entry,
@@ -32,6 +31,7 @@ fn main() {
             commands::get_vaults,
             commands::use_vault,
             commands::create_vault,
+            commands::delete_vault,
             commands::p2p_status,
             commands::p2p_start,
             commands::p2p_stop,
@@ -41,6 +41,11 @@ fn main() {
             commands::p2p_approvals,
             commands::p2p_approve,
             commands::p2p_reject,
+            commands::p2p_sync,
+            commands::generate_password,
+            commands::pairing_generate,
+            commands::pairing_join,
+            commands::pairing_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

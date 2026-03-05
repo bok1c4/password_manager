@@ -29,6 +29,7 @@ function App() {
   const [view, setView] = useState<View>('home');
   const [selectedVault, setSelectedVault] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [joinDeviceName, setJoinDeviceName] = useState('');
   const [joinPassword, setJoinPassword] = useState('');
@@ -69,9 +70,10 @@ function App() {
     setPassword('');
   };
 
-  const handleDeleteVault = async (vaultName: string) => {
-    await deleteVault(vaultName);
+  const handleDeleteVault = async (vaultName: string, deletePassword: string) => {
+    await deleteVault(vaultName, deletePassword);
     setDeleteConfirm(null);
+    setDeletePassword('');
   };
 
   const openUnlock = (vaultName: string) => {
@@ -87,11 +89,16 @@ function App() {
     setView('init');
   };
 
-  const goHome = () => {
+  const goHome = async () => {
+    // Lock vault if currently unlocked to ensure clean state
+    if (unlocked) {
+      await lock();
+    }
     setView('home');
     setSelectedVault(null);
     setPassword('');
     setJoinError('');
+    setDeletePassword('');
     clearError();
   };
 
@@ -214,17 +221,27 @@ function App() {
                 <p className="text-gray-500 mb-4">
                   Are you sure you want to delete "{deleteConfirm}"? This action cannot be undone and all passwords will be lost.
                 </p>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-1">Master Password (required to delete)</label>
+                  <input
+                    type="password"
+                    value={deletePassword}
+                    onChange={(e) => setDeletePassword(e.target.value)}
+                    placeholder="Enter master password"
+                    className="w-full px-4 py-2 rounded-lg border dark:bg-gray-700 dark:border-gray-600"
+                  />
+                </div>
                 <div className="flex gap-3 justify-end">
                   <button
-                    onClick={() => setDeleteConfirm(null)}
+                    onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }}
                     className="px-4 py-2 border rounded"
                   >
                     Cancel
                   </button>
                   <button
-                    onClick={() => handleDeleteVault(deleteConfirm)}
-                    disabled={loading}
-                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
+                    onClick={() => handleDeleteVault(deleteConfirm, deletePassword)}
+                    disabled={loading || !deletePassword}
+                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition disabled:opacity-50"
                   >
                     {loading ? 'Deleting...' : 'Delete'}
                   </button>

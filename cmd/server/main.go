@@ -100,7 +100,7 @@ func main() {
 	http.HandleFunc("/api/init", cors(authHandlers.Init))
 	http.HandleFunc("/api/unlock", cors(authHandlers.Unlock))
 	http.HandleFunc("/api/lock", auth(authHandlers.Lock))
-	http.HandleFunc("/api/is_unlocked", auth(authHandlers.IsUnlocked))
+	http.HandleFunc("/api/is_unlocked", cors(authHandlers.IsUnlocked))
 	http.HandleFunc("/api/is_initialized", cors(authHandlers.IsInitialized))
 
 	http.HandleFunc("/api/entries", auth(entryHandlers.List))
@@ -118,7 +118,8 @@ func main() {
 	http.HandleFunc("/api/vaults/use", cors(vaultHandlers.Use)) // Public - needed to select vault before unlock
 	// Authenticated vault operations
 	http.HandleFunc("/api/vaults/create", auth(vaultHandlers.Create))
-	http.HandleFunc("/api/vaults/delete", auth(vaultHandlers.Delete))
+	// Public - requires password verification in handler instead of auth token
+	http.HandleFunc("/api/vaults/delete", cors(vaultHandlers.Delete))
 
 	http.HandleFunc("/api/ping", cors(func(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, Response{Success: true, Data: "pong"})

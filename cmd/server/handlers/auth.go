@@ -256,6 +256,15 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandlers) Lock(w http.ResponseWriter, r *http.Request) {
+	// Extract and invalidate the token
+	token := r.Header.Get("Authorization")
+	if token != "" {
+		if len(token) > 7 && token[:7] == "Bearer " {
+			token = token[7:]
+		}
+		h.authManager.InvalidateToken(token)
+	}
+
 	h.state.ClearVault()
 	h.authManager.SetVaultUnlocked(false)
 	api.Success(w, nil)

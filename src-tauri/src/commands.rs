@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use tauri::State;
 
 use crate::app_state::AppState;
@@ -63,7 +61,12 @@ fn get_config_path() -> PathBuf {
     get_vault_path().join("config.json")
 }
 
-fn api_call(endpoint: &str, method: &str, body: Option<&str>) -> Result<ApiResponse, String> {
+fn api_call(
+    endpoint: &str,
+    method: &str,
+    body: Option<&str>,
+    token: Option<&str>,
+) -> Result<ApiResponse, String> {
     let client = reqwest::blocking::Client::new();
 
     let url = format!("{}{}", API_BASE, endpoint);
@@ -78,10 +81,14 @@ fn api_call(endpoint: &str, method: &str, body: Option<&str>) -> Result<ApiRespo
         request = request.body(body.to_string());
     }
 
-    let response = request
-        .header("Content-Type", "application/json")
-        .send()
-        .map_err(|e| e.to_string())?;
+    request = request.header("Content-Type", "application/json");
+
+    // Add authorization token if provided
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request.send().map_err(|e| e.to_string())?;
 
     let result: ApiResponse = response.json().map_err(|e| e.to_string())?;
 
@@ -94,7 +101,7 @@ fn api_call(endpoint: &str, method: &str, body: Option<&str>) -> Result<ApiRespo
 
 #[tauri::command]
 pub fn is_initialized() -> Result<bool, String> {
-    let result = api_call("/is_initialized", "GET", None)?;
+    let result = api_call("/is_initialized", "GET", None, None)?;
     if let Some(data) = result.data {
         if let Some(initialized) = data.get("initialized").and_then(|v| v.as_bool()) {
             return Ok(initialized);
@@ -119,7 +126,7 @@ pub fn init_vault(name: String, password: String, vault: Option<String>) -> Resu
         })
         .to_string()
     };
-    let result = api_call("/init", "POST", Some(&body))?;
+    let result = api_call("/init", "POST", Some(&body), None)?;
 
     if let Some(data) = result.data {
         if let Some(device_id) = data.get("device_id").and_then(|v| v.as_str()) {
@@ -136,9 +143,17 @@ pub fn unlock_vault(password: String, state: State<'_, AppState>) -> Result<bool
         "password": password
     })
     .to_string();
-    let result = api_call("/unlock", "POST", Some(&body))?;
+    let result = api_call("/unlock", "POST", Some(&body), None)?;
 
     if result.success {
+        // Store the auth token from the response
+        if let Some(ref data) = result.data {
+            if let Some(token) = data.get("token").and_then(|v| v.as_str()) {
+                let mut token_guard = state.token.lock().map_err(|e| e.to_string())?;
+                *token_guard = Some(token.to_string());
+            }
+        }
+
         let mut unlocked: std::sync::MutexGuard<bool> =
             state.unlocked.lock().map_err(|e| e.to_string())?;
         *unlocked = true;
@@ -150,22 +165,68 @@ pub fn unlock_vault(password: String, state: State<'_, AppState>) -> Result<bool
 
 #[tauri::command]
 pub fn lock_vault(state: State<'_, AppState>) -> Result<bool, String> {
-    let _ = api_call("/lock", "POST", None);
+    // Get token and make API call to invalidate it on backend
+    let token_str: Option<String> = {
+        let token = state.token.lock().map_err(|e| e.to_string())?;
+        token.clone()
+    };
 
-    let mut unlocked: std::sync::MutexGuard<bool> =
-        state.unlocked.lock().map_err(|e| e.to_string())?;
+    // Make the API call - don't ignore errors
+    if let Some(ref token) = token_str {
+        api_call("/lock", "POST", None, Some(token))
+            .map_err(|e| format!("Failed to lock vault on server: {}", e))?;
+    }
+
+    // Clear local state atomically
+    let mut unlocked = state.unlocked.lock().map_err(|e| e.to_string())?;
     *unlocked = false;
+    drop(unlocked);
+
+    let mut token_guard = state.token.lock().map_err(|e| e.to_string())?;
+    *token_guard = None;
+
     Ok(true)
 }
 
 #[tauri::command]
-pub fn is_unlocked(state: State<'_, AppState>) -> bool {
-    state.unlocked.lock().map(|u| *u).unwrap_or(false)
+pub fn is_unlocked(state: State<'_, AppState>) -> Result<bool, String> {
+    // First check local state
+    let locally_unlocked = state.unlocked.lock().map(|u| *u).unwrap_or(false);
+    if !locally_unlocked {
+        return Ok(false);
+    }
+
+    // Verify with backend (requires token)
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    if let Some(token_str) = token.as_deref() {
+        match api_call("/is_unlocked", "GET", None, Some(token_str)) {
+            Ok(result) => {
+                if let Some(data) = result.data {
+                    if let Some(unlocked) = data.get("unlocked").and_then(|v| v.as_bool()) {
+                        return Ok(unlocked);
+                    }
+                }
+            }
+            Err(_) => {
+                // Backend check failed, clear local state
+                drop(token);
+                let mut unlocked_guard = state.unlocked.lock().map_err(|e| e.to_string())?;
+                *unlocked_guard = false;
+                let mut token_guard = state.token.lock().map_err(|e| e.to_string())?;
+                *token_guard = None;
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(locally_unlocked)
 }
 
 #[tauri::command]
-pub fn get_entries() -> Result<Vec<Entry>, String> {
-    let result = api_call("/entries", "GET", None)?;
+pub fn get_entries(state: State<'_, AppState>) -> Result<Vec<Entry>, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/entries", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let entries: Vec<Entry> = serde_json::from_value(data).map_err(|e| e.to_string())?;
@@ -176,16 +237,12 @@ pub fn get_entries() -> Result<Vec<Entry>, String> {
 }
 
 #[tauri::command]
-pub fn get_entry(id: String) -> Result<Entry, String> {
-    Err("Not implemented".to_string())
-}
-
-#[tauri::command]
 pub fn add_entry(
     site: String,
     username: String,
     password: String,
     notes: String,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "site": site,
@@ -195,7 +252,9 @@ pub fn add_entry(
     })
     .to_string();
 
-    let result = api_call("/entries/add", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/entries/add", "POST", Some(&body), token_str)?;
 
     if let Some(data) = result.data {
         if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
@@ -213,6 +272,7 @@ pub fn update_entry(
     username: String,
     password: String,
     notes: String,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "id": id,
@@ -223,7 +283,9 @@ pub fn update_entry(
     })
     .to_string();
 
-    let result = api_call("/entries/update", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/entries/update", "POST", Some(&body), token_str)?;
 
     if result.success {
         Ok("updated".to_string())
@@ -235,16 +297,20 @@ pub fn update_entry(
 }
 
 #[tauri::command]
-pub fn delete_entry(id: String) -> Result<bool, String> {
+pub fn delete_entry(id: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = format!(r#"{{"id":"{}"}}"#, id);
-    let result = api_call("/entries/delete", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/entries/delete", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn get_password(id: String) -> Result<String, String> {
+pub fn get_password(id: String, state: State<'_, AppState>) -> Result<String, String> {
     let body = format!(r#"{{"id":"{}"}}"#, id);
-    let result = api_call("/entries/get_password", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/entries/get_password", "POST", Some(&body), token_str)?;
 
     if let Some(data) = result.data {
         if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
@@ -256,8 +322,10 @@ pub fn get_password(id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn get_devices() -> Result<Vec<Device>, String> {
-    let result = api_call("/devices", "GET", None)?;
+pub fn get_devices(state: State<'_, AppState>) -> Result<Vec<Device>, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/devices", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let devices: Vec<Device> = serde_json::from_value(data).map_err(|e| e.to_string())?;
@@ -268,8 +336,10 @@ pub fn get_devices() -> Result<Vec<Device>, String> {
 }
 
 #[tauri::command]
-pub fn get_sync_status() -> Result<SyncStatus, String> {
-    let result = api_call("/sync/status", "GET", None)?;
+pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/sync/status", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let status: SyncStatus = serde_json::from_value(data).map_err(|e| e.to_string())?;
@@ -284,38 +354,48 @@ pub fn get_sync_status() -> Result<SyncStatus, String> {
 }
 
 #[tauri::command]
-pub fn init_sync(remote: String) -> Result<bool, String> {
+pub fn init_sync(remote: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = serde_json::json!({
         "remote": remote
     })
     .to_string();
-    let result = api_call("/sync/init", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/sync/init", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn sync_now() -> Result<bool, String> {
+pub fn sync_now(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
     // Pull then push
-    api_call("/sync/pull", "POST", None)?;
-    api_call("/sync/push", "POST", None)?;
+    api_call("/sync/pull", "POST", None, token_str)?;
+    api_call("/sync/push", "POST", None, token_str)?;
     Ok(true)
 }
 
 #[tauri::command]
-pub fn sync_push() -> Result<bool, String> {
-    let result = api_call("/sync/push", "POST", None)?;
+pub fn sync_push(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/sync/push", "POST", None, token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn sync_pull() -> Result<bool, String> {
-    let result = api_call("/sync/pull", "POST", None)?;
+pub fn sync_pull(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/sync/pull", "POST", None, token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn get_vaults() -> Result<Vec<VaultInfo>, String> {
-    let result = api_call("/vaults", "GET", None)?;
+pub fn get_vaults(state: State<'_, AppState>) -> Result<Vec<VaultInfo>, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/vaults", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let vaults: Vec<VaultInfo> = serde_json::from_value(data).map_err(|e| e.to_string())?;
@@ -326,46 +406,71 @@ pub fn get_vaults() -> Result<Vec<VaultInfo>, String> {
 }
 
 #[tauri::command]
-pub fn use_vault(vault: String) -> Result<bool, String> {
+pub fn use_vault(vault: String, state: State<'_, AppState>) -> Result<bool, String> {
+    // Clear token and unlocked state BEFORE switching vaults
+    // The vaults/use endpoint doesn't require auth, and we want to ensure
+    // clean state even if the request fails
+    {
+        let mut unlocked_guard = state.unlocked.lock().map_err(|e| e.to_string())?;
+        *unlocked_guard = false;
+    }
+    {
+        let mut token_guard = state.token.lock().map_err(|e| e.to_string())?;
+        *token_guard = None;
+    }
+
     let body = serde_json::json!({
-        "vault": vault
+        "name": vault
     })
     .to_string();
-    let result = api_call("/vaults/use", "POST", Some(&body))?;
+
+    // No token needed for vault switch - endpoint is public
+    let result = api_call("/vaults/use", "POST", Some(&body), None)?;
+
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn create_vault(name: String) -> Result<bool, String> {
+pub fn create_vault(name: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = serde_json::json!({
         "name": name
     })
     .to_string();
-    let result = api_call("/vaults/create", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/vaults/create", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_status() -> Result<bool, String> {
-    let result = api_call("/p2p/status", "GET", None)?;
+pub fn p2p_status(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/status", "GET", None, token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_start() -> Result<bool, String> {
-    let result = api_call("/p2p/start", "POST", None)?;
+pub fn p2p_start(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/start", "POST", None, token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_stop() -> Result<bool, String> {
-    let result = api_call("/p2p/stop", "POST", None)?;
+pub fn p2p_stop(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/stop", "POST", None, token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_peers() -> Result<Vec<serde_json::Value>, String> {
-    let result = api_call("/p2p/peers", "GET", None)?;
+pub fn p2p_peers(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/peers", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let peers: Vec<serde_json::Value> =
@@ -377,28 +482,34 @@ pub fn p2p_peers() -> Result<Vec<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-pub fn p2p_connect(address: String) -> Result<bool, String> {
+pub fn p2p_connect(address: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = serde_json::json!({
         "address": address
     })
     .to_string();
-    let result = api_call("/p2p/connect", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/connect", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_disconnect(peer_id: String) -> Result<bool, String> {
+pub fn p2p_disconnect(peer_id: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = serde_json::json!({
         "peer_id": peer_id
     })
     .to_string();
-    let result = api_call("/p2p/disconnect", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/disconnect", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_approvals() -> Result<Vec<serde_json::Value>, String> {
-    let result = api_call("/p2p/approvals", "GET", None)?;
+pub fn p2p_approvals(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/approvals", "GET", None, token_str)?;
 
     if let Some(data) = result.data {
         let approvals: Vec<serde_json::Value> =
@@ -410,22 +521,132 @@ pub fn p2p_approvals() -> Result<Vec<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-pub fn p2p_approve(device_id: String) -> Result<bool, String> {
+pub fn p2p_approve(device_id: String, state: State<'_, AppState>) -> Result<bool, String> {
     let body = serde_json::json!({
         "device_id": device_id
     })
     .to_string();
-    let result = api_call("/p2p/approve", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/approve", "POST", Some(&body), token_str)?;
     Ok(result.success)
 }
 
 #[tauri::command]
-pub fn p2p_reject(device_id: String, reason: String) -> Result<bool, String> {
+pub fn p2p_reject(
+    device_id: String,
+    reason: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
     let body = serde_json::json!({
         "device_id": device_id,
         "reason": reason
     })
     .to_string();
-    let result = api_call("/p2p/reject", "POST", Some(&body))?;
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/reject", "POST", Some(&body), token_str)?;
     Ok(result.success)
+}
+
+#[tauri::command]
+pub fn p2p_sync(full_sync: bool, state: State<'_, AppState>) -> Result<bool, String> {
+    let body = serde_json::json!({
+        "full_sync": full_sync
+    })
+    .to_string();
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/p2p/sync", "POST", Some(&body), token_str)?;
+    Ok(result.success)
+}
+
+#[tauri::command]
+pub fn delete_vault(
+    name: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let body = serde_json::json!({
+        "name": name,
+        "password": password
+    })
+    .to_string();
+    // No token needed - endpoint verifies password directly
+    let result = api_call("/vaults/delete", "POST", Some(&body), None)?;
+
+    // Clear token if deleting the currently active vault
+    if result.success {
+        let mut unlocked_guard = state.unlocked.lock().map_err(|e| e.to_string())?;
+        *unlocked_guard = false;
+        drop(unlocked_guard);
+        let mut token_guard = state.token.lock().map_err(|e| e.to_string())?;
+        *token_guard = None;
+    }
+
+    Ok(result.success)
+}
+
+#[tauri::command]
+pub fn generate_password(length: u32, state: State<'_, AppState>) -> Result<String, String> {
+    let body = serde_json::json!({
+        "length": length
+    })
+    .to_string();
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/generate", "POST", Some(&body), token_str)?;
+
+    if let Some(data) = result.data {
+        if let Some(password) = data.get("password").and_then(|v| v.as_str()) {
+            return Ok(password.to_string());
+        }
+    }
+
+    Err("Failed to generate password".to_string())
+}
+
+#[tauri::command]
+pub fn pairing_generate(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/pairing/generate", "GET", None, token_str)?;
+
+    if let Some(data) = result.data {
+        Ok(data)
+    } else {
+        Err("Failed to generate pairing code".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn pairing_join(
+    code: String,
+    device_name: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let body = serde_json::json!({
+        "code": code,
+        "device_name": device_name,
+        "password": password
+    })
+    .to_string();
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/pairing/join", "POST", Some(&body), token_str)?;
+    Ok(result.success)
+}
+
+#[tauri::command]
+pub fn pairing_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let token = state.token.lock().map_err(|e| e.to_string())?;
+    let token_str = token.as_deref();
+    let result = api_call("/pairing/status", "GET", None, token_str)?;
+
+    if let Some(data) = result.data {
+        Ok(data)
+    } else {
+        Err("Failed to get pairing status".to_string())
+    }
 }
