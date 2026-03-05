@@ -689,12 +689,18 @@ func handleGetPassword(w http.ResponseWriter, r *http.Request) {
 
 	hasKey := false
 	for fp := range entry.EncryptedAESKeys {
+		log.Printf("[GetPassword] Checking key for: %s...", fp[:min(30, len(fp))])
 		if fp == ourFingerprint {
 			hasKey = true
+			log.Printf("[GetPassword] MATCH! Our fingerprint matches")
 			break
 		}
 	}
 	log.Printf("[GetPassword] Have encrypted key for this device: %v", hasKey)
+
+	// Debug: show what we're trying to decrypt with
+	log.Printf("[GetPassword] Private key available: %v", vault.privateKey.PrivateKey != nil)
+	log.Printf("[GetPassword] Public key in KeyPair: %v", vault.privateKey.PublicKey != nil)
 
 	password, err := crypto.HybridDecrypt(entry, vault.privateKey.PrivateKey)
 	if err != nil {
@@ -2014,20 +2020,18 @@ func reEncryptEntriesForDevice(peerID, deviceID, deviceName, publicKey, fingerpr
 			continue
 		}
 
-		log.Printf("[Sync] Re-encrypted for both generator and new device")
+		log.Printf("[Sync] Re-encrypted for both devices")
 
-		// Keep original generator's encrypted password AND add joiner's encrypted password
-		// We need to store BOTH encrypted passwords - this requires a data model change
-		// For now, let's just keep the generator's version and add the joiner key
-		// The joiner will get their password via sync, not local decryption
-
-		// Just add the joiner's key - keep original encrypted password for generator
+		// Update entry with re-encrypted password for both devices
+		// This ensures BOTH generator and joiner can decrypt
+		entry.EncryptedPassword = encrypted.EncryptedPassword // Re-encrypted with NEW key
 		entry.EncryptedAESKeys[fingerprint] = encrypted.EncryptedAESKeys[fingerprint]
+		entry.EncryptedAESKeys[generatorDevice.Fingerprint] = encrypted.EncryptedAESKeys[generatorDevice.Fingerprint]
 		entry.Version++
 		entry.UpdatedAt = time.Now()
 		entry.UpdatedBy = cfg.DeviceID
 
-		log.Printf("[Sync] Added key for new device, kept original encrypted password")
+		log.Printf("[Sync] Updated both encrypted password and keys for both devices")
 
 		log.Printf("[Sync] Re-encrypted entry: %s (%s) - key for fingerprint: %s...",
 			entry.Site, entry.Username, fingerprint[:min(20, len(fingerprint))])
