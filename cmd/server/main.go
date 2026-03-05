@@ -2241,29 +2241,42 @@ func handlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
 		}
 
 		// Add joiner as trusted device using info from the REQUEST (not from stored code)
-		// Compute fingerprint from public key
-		joinerFingerprint := pairingReq.DeviceID
+		// Compute fingerprint from public key - use actual fingerprint, not device ID
+		joinerFingerprint := ""
 		if pairingReq.PublicKey != "" {
 			if pubKey, err := crypto.ParsePublicKey(pairingReq.PublicKey); err == nil {
 				joinerFingerprint = crypto.GetFingerprint(pubKey)
 			}
-		} else {
-			log.Printf("[Pairing] WARNING: Joiner %s did not provide a public key. They must initialize their vault before pairing. Passwords will NOT be re-encrypted for this device.", pairingReq.DeviceName)
+		}
+		if joinerFingerprint == "" {
+			// No public key provided, use device ID as fallback
+			joinerFingerprint = pairingReq.DeviceID
+			log.Printf("[Pairing] WARNING: Joiner %s did not provide a public key", pairingReq.DeviceName)
 		}
 
 		vaultLock.Lock()
 		log.Printf("[Pairing] handlePairingRequest: vault=%v, storage=%v", vault != nil, vault != nil && vault.storage != nil)
 		if vault != nil && vault.storage != nil {
-			device := models.Device{
-				ID:          pairingReq.DeviceID,
-				Name:        pairingReq.DeviceName,
-				PublicKey:   pairingReq.PublicKey,
-				Fingerprint: joinerFingerprint,
-				Trusted:     true,
-				CreatedAt:   time.Now(),
+			// Check if this device already exists - update instead of duplicate
+			existingDevice, _ := vault.storage.GetDevice(pairingReq.DeviceID)
+			if existingDevice != nil {
+				log.Printf("[Pairing] Updating existing device: %s", pairingReq.DeviceName)
+				existingDevice.PublicKey = pairingReq.PublicKey
+				existingDevice.Fingerprint = joinerFingerprint
+				existingDevice.Trusted = true
+				vault.storage.UpsertDevice(existingDevice)
+			} else {
+				device := models.Device{
+					ID:          pairingReq.DeviceID,
+					Name:        pairingReq.DeviceName,
+					PublicKey:   pairingReq.PublicKey,
+					Fingerprint: joinerFingerprint,
+					Trusted:     true,
+					CreatedAt:   time.Now(),
+				}
+				vault.storage.UpsertDevice(&device)
+				log.Printf("[Pairing] Added joiner %s as trusted device (fingerprint: %s)", pairingReq.DeviceName, joinerFingerprint)
 			}
-			vault.storage.UpsertDevice(&device)
-			log.Printf("[Pairing] Added joiner %s as trusted device (fingerprint: %s)", pairingReq.DeviceName, joinerFingerprint)
 
 			// FIX: Also update our own device with public key if it's empty
 			if vault.cfg != nil && vault.privateKey != nil && vault.privateKey.PublicKey != nil {
