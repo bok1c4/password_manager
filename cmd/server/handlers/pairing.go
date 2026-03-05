@@ -483,6 +483,11 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Wait for host to process the updated pairing request with public key
+		// The host needs time to re-encrypt all entries for both devices
+		log.Printf("[Pairing Join] Waiting for host to complete re-encryption...")
+		time.Sleep(3 * time.Second)
+
 		log.Printf("[Pairing Join] Requesting vault sync from %s...", response.DeviceName)
 
 		if generatorPeerID != "" {
@@ -527,6 +532,13 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+
+		// Clean up P2P after successful pairing to free resources
+		go func() {
+			time.Sleep(5 * time.Second) // Give time for final ACKs
+			h.state.StopP2P()
+			log.Printf("[Pairing Join] P2P stopped after successful vault sync")
+		}()
 
 		api.Success(w, map[string]interface{}{
 			"message":         "Connected to vault",
@@ -638,13 +650,16 @@ func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.Recei
 			}
 
 			if pairingReq.PublicKey != "" {
-				go h.reEncryptEntriesForDevice(
+				log.Printf("[Pairing] Starting re-encryption for device: %s", pairingReq.DeviceName)
+				// Run synchronously - must complete before responding to ensure sync sends re-encrypted data
+				h.reEncryptEntriesForDevice(
 					msg.FromPeer,
 					pairingReq.DeviceID,
 					pairingReq.DeviceName,
 					pairingReq.PublicKey,
 					joinerFingerprint,
 				)
+				log.Printf("[Pairing] Re-encryption completed for device: %s", pairingReq.DeviceName)
 			} else {
 				log.Printf("[Pairing] Skipping re-encryption - joiner has no public key")
 			}
@@ -1026,6 +1041,13 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 	time.Sleep(2 * time.Second)
 
 	log.Printf("[Sync] Re-encryption complete, waiting for joiner to request sync...")
+
+	// Clean up P2P after a delay to allow sync to complete
+	go func() {
+		time.Sleep(30 * time.Second) // Wait for sync and some buffer time
+		h.state.StopP2P()
+		log.Printf("[Sync] P2P stopped after re-encryption and sync window")
+	}()
 }
 
 func min(a, b int) int {
