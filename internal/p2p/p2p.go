@@ -52,6 +52,8 @@ type P2PManager struct {
 	pairingResponseChan chan ReceivedMessage
 	syncRequestChan     chan ReceivedMessage
 	syncDataChan        chan ReceivedMessage
+	readyForSyncChan    chan ReceivedMessage
+	syncAckChan         chan ReceivedMessage
 	discovery           mdns.Service
 	connectedCh         chan PeerInfo
 	disconnectedCh      chan string
@@ -78,6 +80,8 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 		pairingResponseChan: make(chan ReceivedMessage, 10),
 		syncRequestChan:     make(chan ReceivedMessage, 10),
 		syncDataChan:        make(chan ReceivedMessage, 10),
+		readyForSyncChan:    make(chan ReceivedMessage, 10),
+		syncAckChan:         make(chan ReceivedMessage, 10),
 		connectedCh:         make(chan PeerInfo, 10),
 		disconnectedCh:      make(chan string, 10),
 	}
@@ -269,6 +273,20 @@ func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
 	case MsgTypePairingResponse:
 		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s (msg.PeerID=%s)\n", fromPeer, msg.PeerID)
 		p.messageChan <- receivedMsg
+	case MsgTypeReadyForSync:
+		fmt.Printf("[P2P] Received READY_FOR_SYNC from: %s\n", fromPeer)
+		select {
+		case p.readyForSyncChan <- receivedMsg:
+		default:
+			fmt.Printf("[P2P] readyForSyncChan is full, dropping message\n")
+		}
+	case MsgTypeSyncAck:
+		fmt.Printf("[P2P] Received SYNC_ACK from: %s\n", fromPeer)
+		select {
+		case p.syncAckChan <- receivedMsg:
+		default:
+			fmt.Printf("[P2P] syncAckChan is full, dropping message\n")
+		}
 	default:
 		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
 	}
@@ -478,6 +496,14 @@ func (p *P2PManager) MessageChan() <-chan ReceivedMessage {
 	return p.messageChan
 }
 
+func (p *P2PManager) ReadyForSyncChan() <-chan ReceivedMessage {
+	return p.readyForSyncChan
+}
+
+func (p *P2PManager) SyncAckChan() <-chan ReceivedMessage {
+	return p.syncAckChan
+}
+
 func (p *P2PManager) Stop() {
 	p.cancel()
 
@@ -494,6 +520,8 @@ func (p *P2PManager) Stop() {
 	close(p.pairingResponseChan)
 	close(p.syncRequestChan)
 	close(p.syncDataChan)
+	close(p.readyForSyncChan)
+	close(p.syncAckChan)
 	close(p.connectedCh)
 	close(p.disconnectedCh)
 

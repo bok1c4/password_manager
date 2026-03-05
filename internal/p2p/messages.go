@@ -21,6 +21,8 @@ const (
 	MsgTypeEntryDelete     = "ENTRY_DELETE"
 	MsgTypePairingRequest  = "PAIRING_REQUEST"
 	MsgTypePairingResponse = "PAIRING_RESPONSE"
+	MsgTypeReadyForSync    = "READY_FOR_SYNC"
+	MsgTypeSyncAck         = "SYNC_ACK"
 )
 
 type Message struct {
@@ -227,4 +229,32 @@ type PairingResponsePayload struct {
 	PublicKey   string `json:"public_key,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Error       string `json:"error,omitempty"`
+}
+
+type ReadyForSyncPayload struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	EntryCount int    `json:"entry_count"`
+}
+
+type SyncAckPayload struct {
+	DeviceID string `json:"device_id"`
+	Success  bool   `json:"success"`
+}
+
+func CreateReadyForSyncMessage(deviceID, deviceName string, entryCount int) (*Message, error) {
+	payload := ReadyForSyncPayload{
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+		EntryCount: entryCount,
+	}
+	return NewMessage(MsgTypeReadyForSync, payload)
+}
+
+func CreateSyncAckMessage(deviceID string, success bool) (*Message, error) {
+	payload := SyncAckPayload{
+		DeviceID: deviceID,
+		Success:  success,
+	}
+	return NewMessage(MsgTypeSyncAck, payload)
 }

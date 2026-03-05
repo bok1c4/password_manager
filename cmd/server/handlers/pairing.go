@@ -483,10 +483,25 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Wait for host to process the updated pairing request with public key
-		// The host needs time to re-encrypt all entries for both devices
-		log.Printf("[Pairing Join] Waiting for host to complete re-encryption...")
-		time.Sleep(3 * time.Second)
+		// Wait for READY_FOR_SYNC from host (acknowledgment that re-encryption is complete)
+		log.Printf("[Pairing Join] Waiting for READY_FOR_SYNC from host...")
+		readyForSync := false
+		readyTimeout := time.After(10 * time.Second)
+
+		for !readyForSync {
+			select {
+			case msg := <-pm.ReadyForSyncChan():
+				var readyPayload p2p.ReadyForSyncPayload
+				if err := json.Unmarshal(msg.Payload, &readyPayload); err == nil {
+					log.Printf("[Pairing Join] Received READY_FOR_SYNC from %s with %d entries ready",
+						readyPayload.DeviceName, readyPayload.EntryCount)
+					readyForSync = true
+				}
+			case <-readyTimeout:
+				log.Printf("[Pairing Join] Timeout waiting for READY_FOR_SYNC, proceeding anyway...")
+				readyForSync = true // Proceed anyway as fallback
+			}
+		}
 
 		log.Printf("[Pairing Join] Requesting vault sync from %s...", response.DeviceName)
 
@@ -649,6 +664,7 @@ func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.Recei
 				}
 			}
 
+			pm, _ := h.state.GetP2PManager()
 			if pairingReq.PublicKey != "" {
 				log.Printf("[Pairing] Starting re-encryption for device: %s", pairingReq.DeviceName)
 				// Run synchronously - must complete before responding to ensure sync sends re-encrypted data
@@ -660,6 +676,25 @@ func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.Recei
 					joinerFingerprint,
 				)
 				log.Printf("[Pairing] Re-encryption completed for device: %s", pairingReq.DeviceName)
+
+				// Send READY_FOR_SYNC to notify joiner that re-encryption is complete
+				if pm != nil {
+					entries, _ := storage.ListEntries()
+					readyMsg, err := p2p.CreateReadyForSyncMessage(vault.Config.DeviceID, vault.Config.DeviceName, len(entries))
+					if err != nil {
+						log.Printf("[Pairing] Failed to create READY_FOR_SYNC message: %v", err)
+					} else {
+						err = pm.SendMessage(msg.FromPeer, p2p.SyncMessage{
+							Type:    readyMsg.Type,
+							Payload: readyMsg.Payload,
+						})
+						if err != nil {
+							log.Printf("[Pairing] Failed to send READY_FOR_SYNC: %v", err)
+						} else {
+							log.Printf("[Pairing] Sent READY_FOR_SYNC to %s with %d entries", msg.FromPeer, len(entries))
+						}
+					}
+				}
 			} else {
 				log.Printf("[Pairing] Skipping re-encryption - joiner has no public key")
 			}
