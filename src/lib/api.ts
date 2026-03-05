@@ -1,12 +1,37 @@
 const API_BASE = 'http://localhost:18475/api';
 
+// Token management
+let authToken: string | null = null;
+
+function setToken(token: string) {
+  authToken = token;
+}
+
+function getToken(): string | null {
+  return authToken;
+}
+
+function clearToken() {
+  authToken = null;
+}
+
 async function apiCall(endpoint: string, options?: RequestInit): Promise<any> {
+  const token = getToken();
+  
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...options?.headers as Record<string, string>,
+  };
+  
+  // Add auth token if available (and not for public endpoints)
+  const publicEndpoints = ['/is_initialized', '/unlock', '/init', '/health', '/vaults'];
+  if (token && !publicEndpoints.includes(endpoint)) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
   
   const data = await response.json();
@@ -19,8 +44,20 @@ async function apiCall(endpoint: string, options?: RequestInit): Promise<any> {
 export const api = {
   // Vault
   isInitialized: () => apiCall('/is_initialized'),
-  unlock: (password: string) => apiCall('/unlock', { method: 'POST', body: JSON.stringify({ password }) }),
-  lock: () => apiCall('/lock', { method: 'POST' }),
+  unlock: async (password: string) => {
+    const result = await apiCall('/unlock', { method: 'POST', body: JSON.stringify({ password }) });
+    // Store the token after successful unlock
+    if (result.data?.token) {
+      setToken(result.data.token);
+    }
+    return result;
+  },
+  lock: async () => {
+    const result = await apiCall('/lock', { method: 'POST' });
+    // Clear token after lock
+    clearToken();
+    return result;
+  },
   
   // Entries
   getEntries: () => apiCall('/entries'),
@@ -36,7 +73,12 @@ export const api = {
   
   // Vaults
   getVaults: () => apiCall('/vaults'),
-  useVault: (vault: string) => apiCall('/vaults/use', { method: 'POST', body: JSON.stringify({ vault }) }),
+  useVault: async (vault: string) => {
+    const result = await apiCall('/vaults/use', { method: 'POST', body: JSON.stringify({ vault }) });
+    // Clear token when switching vaults (need to re-unlock)
+    clearToken();
+    return result;
+  },
   createVault: (name: string) => apiCall('/vaults/create', { method: 'POST', body: JSON.stringify({ name }) }),
   deleteVault: (name: string, deleteDataDir: boolean = true) => apiCall('/vaults/delete', { method: 'POST', body: JSON.stringify({ name, delete_data_dir: deleteDataDir }) }),
   

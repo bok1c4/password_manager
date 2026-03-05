@@ -1,17 +1,26 @@
 # Binaries and Build Artifacts
-pwman
-pwman-server
-server
-dist/
-src-tauri/target/
-build/
 
-# Go
+# Root-level binaries (NOT tracked)
+/pwman
+/pwman-server
+/main
+/server
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+
+# Build directories
+dist/
+src-tauri/target/
+
+# Bin directory - track directory but ignore contents
+/bin/*
+!/bin/.gitkeep
+!/bin/README.md
+
+# Go
 *.test
 *.out
 go.work

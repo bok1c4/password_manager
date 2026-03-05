@@ -212,3 +212,47 @@ func TestGetFingerprint(t *testing.T) {
 		t.Error("Different keys should have different fingerprints")
 	}
 }
+
+func TestGenerateRSAKeyPair4096(t *testing.T) {
+	keyPair, err := GenerateRSAKeyPair(4096)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key pair: %v", err)
+	}
+
+	if keyPair.PrivateKey == nil {
+		t.Fatal("Private key is nil")
+	}
+
+	if keyPair.PublicKey == nil {
+		t.Fatal("Public key is nil")
+	}
+
+	expectedBits := 4096
+	actualBits := keyPair.PublicKey.N.BitLen()
+	if actualBits != expectedBits {
+		t.Errorf("Key size = %d, want %d", actualBits, expectedBits)
+	}
+}
+
+func TestRSAEncryptDecrypt4096(t *testing.T) {
+	keyPair, err := GenerateRSAKeyPair(4096)
+	if err != nil {
+		t.Fatalf("Failed to generate key pair: %v", err)
+	}
+
+	plaintext := []byte("Hello, World! This is a test message with 4096-bit RSA.")
+
+	ciphertext, err := RSAEncrypt(plaintext, keyPair.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	decrypted, err := RSADecrypt(ciphertext, keyPair.PrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to decrypt: %v", err)
+	}
+
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Decrypted text doesn't match original: got %s, want %s", decrypted, plaintext)
+	}
+}

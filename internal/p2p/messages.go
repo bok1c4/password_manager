@@ -173,13 +173,12 @@ func CreateRejectDeviceMessage(deviceID, reason string) (*Message, error) {
 	return NewMessage(MsgTypeRejectDevice, payload)
 }
 
-func CreatePairingRequestMessage(code, deviceID, deviceName, publicKey, password string) (*Message, error) {
+func CreatePairingRequestMessage(code, deviceID, deviceName, publicKey string) (*Message, error) {
 	payload := PairingRequestPayload{
 		Code:       code,
 		DeviceID:   deviceID,
 		DeviceName: deviceName,
 		PublicKey:  publicKey,
-		Password:   password,
 	}
 	return NewMessage(MsgTypePairingRequest, payload)
 }
@@ -215,8 +214,7 @@ type PairingRequestPayload struct {
 	Code       string `json:"code"`
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
-	PublicKey  string `json:"public_key"`         // Joiner's public key for re-encryption
-	Password   string `json:"password,omitempty"` // Vault password for verification
+	PublicKey  string `json:"public_key"`
 }
 
 type PairingResponsePayload struct {

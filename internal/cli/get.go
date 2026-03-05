@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"syscall"
@@ -62,10 +63,24 @@ var getCmd = &cobra.Command{
 				os.Exit(1)
 			}
 			fmt.Printf("[INFO] Password for %s copied to clipboard (clears in 30 seconds)\n", site)
-			go func() {
-				time.Sleep(30 * time.Second)
-				clipboard.WriteAll("")
-			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+
+			go func(password string) {
+				select {
+				case <-ctx.Done():
+					current, _ := clipboard.ReadAll()
+					if current == password {
+						clipboard.WriteAll("")
+					}
+				case <-time.After(30 * time.Second):
+					current, _ := clipboard.ReadAll()
+					if current == password {
+						clipboard.WriteAll("")
+					}
+				}
+			}(pass)
 		} else {
 			fmt.Printf("[INFO] Password for %s:\n%s\n", site, pass)
 		}
