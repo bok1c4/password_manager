@@ -18,6 +18,7 @@ import (
 	"github.com/bok1c4/pwman/internal/config"
 	"github.com/bok1c4/pwman/internal/crypto"
 	"github.com/bok1c4/pwman/internal/p2p"
+	"github.com/bok1c4/pwman/internal/pairing"
 	"github.com/bok1c4/pwman/internal/state"
 	"github.com/bok1c4/pwman/internal/storage"
 	"github.com/bok1c4/pwman/pkg/models"
@@ -114,45 +115,24 @@ func (h *PairingHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceID := vault.Config.DeviceID
 	deviceName := vault.Config.DeviceName
-	vaultName := vault.VaultName
-	publicKeyPath := config.PublicKeyPathForVault(vaultName)
-	log.Printf("[Pairing] DeviceName: '%s', vaultName: '%s', publicKeyPath: '%s'", deviceName, vaultName, publicKeyPath)
 
-	log.Printf("[Pairing] Looking for public key at: %s", publicKeyPath)
-	publicKeyBytes, err := os.ReadFile(publicKeyPath)
+	// Generate TOTP code using vault master key
+	masterKey, err := vault.GetMasterKey()
 	if err != nil {
-		log.Printf("[Pairing] Error reading public key: %v", err)
-		api.Error(w, http.StatusInternalServerError, "KEY_ERROR", "failed to read public key")
+		log.Printf("[Pairing] Failed to get master key: %v", err)
+		api.Error(w, http.StatusInternalServerError, "KEY_ERROR", "failed to get master key")
 		return
 	}
 
-	publicKey := string(publicKeyBytes)
-	code := generatePairingCode()
-	normalizedCode := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
-	fingerprint := deviceID
+	code := pairing.GeneratePairingCode(masterKey, vault.Config.DeviceID)
 
-	activeVault, _ := config.GetActiveVault()
-
-	h.state.AddPairingCode(normalizedCode, state.PairingCode{
-		Code:        code,
-		VaultID:     activeVault,
-		VaultName:   vaultName,
-		DeviceID:    deviceID,
-		DeviceName:  deviceName,
-		PublicKey:   publicKey,
-		Fingerprint: fingerprint,
-		ExpiresAt:   time.Now().Add(5 * time.Minute),
-		Used:        false,
-	})
-
-	log.Printf("[Pairing] Generated code: %s for device: %s", code, deviceName)
+	log.Printf("[Pairing] Generated TOTP code: %s for device: %s", code, deviceName)
 
 	api.Success(w, map[string]interface{}{
 		"code":        code,
 		"device_name": deviceName,
-		"expires_in":  300,
+		"expires_in":  60, // TOTP codes expire in 60 seconds
 	})
 }
 
@@ -589,6 +569,12 @@ func (h *PairingHandlers) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.ReceivedMessage) {
+	// Rate limiting - check first before processing
+	if !h.state.RecordPairingAttempt(msg.FromPeer) {
+		log.Printf("[Pairing] Rate limit exceeded for peer: %s", msg.FromPeer)
+		return // Silently drop - don't reveal lockout
+	}
+
 	var pairingReq p2p.PairingRequestPayload
 	if err := json.Unmarshal(msg.Payload, &pairingReq); err != nil {
 		log.Printf("[Pairing] Failed to parse request: %v", err)
@@ -599,17 +585,32 @@ func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.Recei
 
 	var response p2p.PairingResponsePayload
 
-	code, exists := h.state.GetPairingCode(pairingReq.Code)
+	// Verify TOTP code using vault master key
+	vault, ok := h.state.GetVault()
+	if !ok || vault == nil {
+		response = p2p.PairingResponsePayload{Success: false, Error: "vault_locked"}
+		respMsg, _ := p2p.CreatePairingResponseMessage(false, "", "", "", "", "", "", "", "vault_locked")
+		pm.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+		return
+	}
 
-	if !exists {
+	masterKey, err := vault.GetMasterKey()
+	if err != nil {
+		response = p2p.PairingResponsePayload{Success: false, Error: "vault_locked"}
+		respMsg, _ := p2p.CreatePairingResponseMessage(false, "", "", "", "", "", "", "", "vault_locked")
+		pm.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+		return
+	}
+
+	if !pairing.VerifyPairingCode(masterKey, vault.Config.DeviceID, pairingReq.Code) {
 		response = p2p.PairingResponsePayload{Success: false, Error: "invalid_code"}
-	} else if code.Used {
-		response = p2p.PairingResponsePayload{Success: false, Error: "code_already_used"}
-	} else if time.Now().After(code.ExpiresAt) {
-		response = p2p.PairingResponsePayload{Success: false, Error: "code_expired"}
-	} else {
-		code.Used = true
-		h.state.UpdatePairingCode(pairingReq.Code, code)
+		respMsg, _ := p2p.CreatePairingResponseMessage(false, "", "", "", "", "", "", "", "invalid_code")
+		pm.SendMessage(msg.FromPeer, p2p.SyncMessage{Type: respMsg.Type, Payload: respMsg.Payload})
+		return
+	}
+
+	// TOTP code is valid - proceed with pairing
+	{
 
 		joinerFingerprint := ""
 		if pairingReq.PublicKey != "" {
@@ -696,15 +697,20 @@ func (h *PairingHandlers) HandlePairingRequest(pm *p2p.P2PManager, msg p2p.Recei
 			log.Printf("[Pairing] WARNING: vault not available for adding trusted device")
 		}
 
+		// Get public key for response
+		publicKeyPath := config.PublicKeyPathForVault(vault.VaultName)
+		publicKeyBytes, _ := os.ReadFile(publicKeyPath)
+		publicKey := string(publicKeyBytes)
+
 		response = p2p.PairingResponsePayload{
 			Success:     true,
 			Code:        pairingReq.Code,
-			VaultName:   code.VaultName,
-			VaultID:     code.VaultID,
-			DeviceID:    code.DeviceID,
-			DeviceName:  code.DeviceName,
-			PublicKey:   code.PublicKey,
-			Fingerprint: code.Fingerprint,
+			VaultName:   vault.VaultName,
+			VaultID:     vault.Config.DeviceID,
+			DeviceID:    vault.Config.DeviceID,
+			DeviceName:  vault.Config.DeviceName,
+			PublicKey:   publicKey,
+			Fingerprint: vault.Config.DeviceID,
 		}
 	}
 

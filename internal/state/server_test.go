@@ -243,3 +243,72 @@ func TestConcurrentAccess(t *testing.T) {
 		<-done
 	}
 }
+
+func TestPairingAttempt_RateLimiting(t *testing.T) {
+	// Override lockout duration for faster tests
+	oldDuration := LockoutDuration
+	LockoutDuration = 100 * time.Millisecond
+	defer func() { LockoutDuration = oldDuration }()
+
+	s := NewServerState()
+	peerID := "test-peer-123"
+
+	// Should allow exactly 5 attempts
+	for i := 0; i < 5; i++ {
+		if !s.RecordPairingAttempt(peerID) {
+			t.Errorf("Attempt %d should succeed", i+1)
+		}
+	}
+
+	// 6th attempt should be blocked
+	if s.RecordPairingAttempt(peerID) {
+		t.Error("6th attempt should be blocked")
+	}
+
+	// After lockout period, should allow more attempts
+	time.Sleep(150 * time.Millisecond)
+	if !s.RecordPairingAttempt(peerID) {
+		t.Error("Should reset after lockout")
+	}
+}
+
+func TestPairingAttempt_DifferentPeers(t *testing.T) {
+	s := NewServerState()
+	peer1 := "peer-1"
+	peer2 := "peer-2"
+
+	// Max out peer1
+	for i := 0; i < 5; i++ {
+		s.RecordPairingAttempt(peer1)
+	}
+	if s.RecordPairingAttempt(peer1) {
+		t.Error("Peer1 should be blocked")
+	}
+
+	// Peer2 should still work
+	if !s.RecordPairingAttempt(peer2) {
+		t.Error("Peer2 should not be affected")
+	}
+}
+
+func TestVault_GetMasterKey(t *testing.T) {
+	// Vault without master key
+	vault := &Vault{
+		VaultName: "test",
+	}
+
+	_, err := vault.GetMasterKey()
+	if err == nil {
+		t.Error("Should return error when vault not unlocked")
+	}
+
+	// Vault with master key
+	vault.MasterKey = []byte("test-master-key")
+	key, err := vault.GetMasterKey()
+	if err != nil {
+		t.Errorf("Should not return error: %v", err)
+	}
+	if string(key) != "test-master-key" {
+		t.Errorf("expected 'test-master-key', got '%s'", string(key))
+	}
+}

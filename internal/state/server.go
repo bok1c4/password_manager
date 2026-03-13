@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -16,6 +17,15 @@ type Vault struct {
 	Storage    *storage.SQLite
 	Config     *config.Config
 	VaultName  string
+	MasterKey  []byte // Derived from password, stored during unlock for TOTP
+}
+
+// GetMasterKey returns the vault's master key for TOTP generation
+func (v *Vault) GetMasterKey() ([]byte, error) {
+	if len(v.MasterKey) == 0 {
+		return nil, fmt.Errorf("vault not unlocked")
+	}
+	return v.MasterKey, nil
 }
 
 type PairingCode struct {
@@ -52,6 +62,17 @@ type PairingState struct {
 	Status          string
 }
 
+// PairingAttempt tracks failed pairing attempts for rate limiting
+type PairingAttempt struct {
+	Count       int
+	LastAttempt time.Time
+	LockedUntil *time.Time
+}
+
+// LockoutDuration is the time to lock out after 5 failed attempts
+// Exported so tests can override it
+var LockoutDuration = 30 * time.Second
+
 type ServerState struct {
 	mu sync.RWMutex
 
@@ -72,6 +93,10 @@ type ServerState struct {
 	approvalsLock     sync.Mutex
 	pairingStateLock  sync.Mutex
 
+	// Rate limiting for pairing attempts
+	pairingAttempts   map[string]*PairingAttempt
+	pairingAttemptsMu sync.Mutex
+
 	startTime time.Time
 }
 
@@ -81,8 +106,43 @@ func NewServerState() *ServerState {
 		pairingRequests:   make(map[string]PairingRequest),
 		pairingResponseCh: make(chan p2p.PairingResponsePayload, 10),
 		pendingApprovals:  make(map[string]PendingApproval),
+		pairingAttempts:   make(map[string]*PairingAttempt),
 		startTime:         time.Now(),
 	}
+}
+
+// RecordPairingAttempt tracks pairing attempts and enforces rate limiting
+// Returns true if attempt is allowed, false if peer is locked out
+func (s *ServerState) RecordPairingAttempt(peerID string) bool {
+	s.pairingAttemptsMu.Lock()
+	defer s.pairingAttemptsMu.Unlock()
+
+	att, exists := s.pairingAttempts[peerID]
+	if !exists {
+		s.pairingAttempts[peerID] = &PairingAttempt{
+			Count:       1,
+			LastAttempt: time.Now(),
+		}
+		return true
+	}
+
+	// Check if still locked
+	if att.LockedUntil != nil && time.Now().Before(*att.LockedUntil) {
+		return false
+	}
+
+	att.Count++
+	att.LastAttempt = time.Now()
+
+	// Lock after MORE than 5 attempts (allows exactly 5)
+	if att.Count > 5 {
+		until := time.Now().Add(LockoutDuration)
+		att.LockedUntil = &until
+		att.Count = 0
+		return false
+	}
+
+	return true
 }
 
 func (s *ServerState) GetStartTime() time.Time {

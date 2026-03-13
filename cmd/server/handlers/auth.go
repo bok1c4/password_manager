@@ -119,6 +119,13 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Derive master key for TOTP generation
+	masterKey, err := crypto.DeriveKey(req.Password, salt)
+	if err != nil {
+		api.InternalError(w, "failed to derive master key: "+err.Error())
+		return
+	}
+
 	if err := crypto.SavePublicKey(keyPair.PublicKey, config.PublicKeyPathForVault(vaultName)); err != nil {
 		api.InternalError(w, "failed to save public key: "+err.Error())
 		return
@@ -164,6 +171,7 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 		Storage:    db,
 		Config:     cfg,
 		VaultName:  vaultName,
+		MasterKey:  masterKey,
 	}
 
 	h.state.SetVault(vault)
@@ -213,6 +221,19 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load salt and derive master key for TOTP generation
+	saltPath := privateKeyPath + ".salt"
+	salt, err := os.ReadFile(saltPath)
+	if err != nil {
+		api.InternalError(w, "failed to read salt")
+		return
+	}
+	masterKey, err := crypto.DeriveKey(req.Password, salt)
+	if err != nil {
+		api.InternalError(w, "failed to derive master key")
+		return
+	}
+
 	db, err := storage.NewSQLite(config.DatabasePathForVault(activeVault))
 	if err != nil {
 		api.InternalError(w, "failed to open database")
@@ -245,6 +266,7 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 		Storage:    db,
 		Config:     vaultConfig,
 		VaultName:  activeVault,
+		MasterKey:  masterKey,
 	}
 
 	h.state.SetVault(vault)
