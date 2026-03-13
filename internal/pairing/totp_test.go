@@ -25,6 +25,10 @@ func TestTOTPGeneration(t *testing.T) {
 }
 
 func TestTOTPClockSkew(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping clock-dependent test")
+	}
+
 	masterKey := []byte("test-master-key-32bytes-long!!")
 	vaultID := "test-vault-123"
 
@@ -55,6 +59,10 @@ func TestTOTPDifferentVaults(t *testing.T) {
 }
 
 func TestTOTPCodeRotation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping clock-dependent test")
+	}
+
 	masterKey := []byte("test-master-key-32bytes-long!!")
 	vaultID := "test-vault-123"
 
