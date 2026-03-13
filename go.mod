@@ -18,6 +18,7 @@ require (
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
@@ -25,6 +26,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/ipfs/go-cid v0.5.0 // indirect
