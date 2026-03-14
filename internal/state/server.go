@@ -65,14 +65,17 @@ type PairingState struct {
 
 // PairingAttempt tracks failed pairing attempts for rate limiting
 type PairingAttempt struct {
-	Count       int
-	LastAttempt time.Time
-	LockedUntil *time.Time
+	ConsecutiveFailures int
+	LockoutCount        int
+	LastAttempt         time.Time
+	LockedUntil         *time.Time
 }
 
-// LockoutDuration is the time to lock out after 5 failed attempts
-// Exported so tests can override it
-var LockoutDuration = 30 * time.Second
+// BaseLockoutDelay is the base delay for exponential backoff
+var BaseLockoutDelay = 30 * time.Second
+
+// MaxBackoffMultiplier caps the exponential backoff at 10x (5 minutes)
+const MaxBackoffMultiplier = 10
 
 type ServerState struct {
 	mu sync.RWMutex
@@ -124,8 +127,8 @@ func (s *ServerState) RecordPairingAttempt(peerID string) bool {
 	att, exists := s.pairingAttempts[peerID]
 	if !exists {
 		s.pairingAttempts[peerID] = &PairingAttempt{
-			Count:       1,
-			LastAttempt: time.Now(),
+			ConsecutiveFailures: 1,
+			LastAttempt:         time.Now(),
 		}
 		return true
 	}
@@ -135,14 +138,24 @@ func (s *ServerState) RecordPairingAttempt(peerID string) bool {
 		return false
 	}
 
-	att.Count++
+	att.ConsecutiveFailures++
 	att.LastAttempt = time.Now()
 
 	// Lock after MORE than 5 attempts (allows exactly 5)
-	if att.Count > 5 {
-		until := time.Now().Add(LockoutDuration)
+	if att.ConsecutiveFailures > 5 {
+		// Increment lockout count (never reset)
+		att.LockoutCount++
+
+		// Calculate exponential backoff: baseDelay * min(2^lockoutCount, 10)
+		multiplier := 1 << att.LockoutCount // 2^lockoutCount
+		if multiplier > MaxBackoffMultiplier {
+			multiplier = MaxBackoffMultiplier
+		}
+		delay := BaseLockoutDelay * time.Duration(multiplier)
+
+		until := time.Now().Add(delay)
 		att.LockedUntil = &until
-		att.Count = 0
+		att.ConsecutiveFailures = 0 // Reset consecutive failures, keep lockout count
 		return false
 	}
 

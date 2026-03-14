@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -53,6 +54,31 @@ func generatePairingCode() string {
 		code[i] = chars[n.Int64()]
 	}
 	return fmt.Sprintf("%s-%s-%s", string(code[0:3]), string(code[3:6]), string(code[6:9]))
+}
+
+func validateVaultName(name string) error {
+	if name == "" {
+		return fmt.Errorf("vault name cannot be empty")
+	}
+
+	if len(name) > 64 {
+		return fmt.Errorf("vault name too long (max 64 characters)")
+	}
+
+	valid := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	if !valid.MatchString(name) {
+		return fmt.Errorf("vault name contains invalid characters (only alphanumeric, underscore, hyphen allowed)")
+	}
+
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("vault name cannot contain path traversal sequences")
+	}
+
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("vault name cannot contain path separators")
+	}
+
+	return nil
 }
 
 func (h *PairingHandlers) Generate(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +343,11 @@ func (h *PairingHandlers) Join(w http.ResponseWriter, r *http.Request) {
 
 		vaultName := response.VaultName
 		joinPassword := req.Password
+
+		if err := validateVaultName(vaultName); err != nil {
+			api.BadRequest(w, err.Error())
+			return
+		}
 
 		log.Printf("[Pairing Join] Vault name from generator: %s", vaultName)
 
@@ -983,7 +1014,7 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 	db := vault.Storage
 	cfg := vault.Config
 
-	log.Printf("[Sync] Starting re-encryption for device: %s (%s)", deviceName, deviceID)
+	log.Printf("[Sync] Starting atomic re-encryption for device: %s (%s)", deviceName, deviceID)
 
 	entries, err := db.ListEntries()
 	if err != nil {
@@ -1001,17 +1032,22 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 		Trusted:     true,
 	}
 
-	reEncryptedEntries := []p2p.EntryData{}
+	// Prepare all re-encrypted entries before starting transaction
+	type reEncryptResult struct {
+		entry     *models.PasswordEntry
+		entryData p2p.EntryData
+	}
+	results := []reEncryptResult{}
+	failedCount := 0
 
 	for i := range entries {
 		entry := &entries[i]
 		password, err := crypto.HybridDecrypt(entry, privateKey)
 		if err != nil {
 			log.Printf("[Sync] Failed to decrypt entry %s: %v", entry.ID, err)
+			failedCount++
 			continue
 		}
-
-		log.Printf("[Sync] Decrypted password for entry %s", entry.Site)
 
 		generatorDevice, _ := db.GetDevice(cfg.DeviceID)
 
@@ -1034,12 +1070,12 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 
 		encrypted, err := crypto.HybridEncrypt(password, allDevices, allGetPublicKey)
 		if err != nil {
-			log.Printf("[Sync] Failed to re-encrypt for both devices: %v", err)
+			log.Printf("[Sync] Failed to re-encrypt entry %s: %v", entry.ID, err)
+			failedCount++
 			continue
 		}
 
-		log.Printf("[Sync] Re-encrypted for both devices")
-
+		// Update entry data
 		entry.EncryptedPassword = encrypted.EncryptedPassword
 		entry.EncryptedAESKeys[fingerprint] = encrypted.EncryptedAESKeys[fingerprint]
 		entry.EncryptedAESKeys[generatorDevice.Fingerprint] = encrypted.EncryptedAESKeys[generatorDevice.Fingerprint]
@@ -1047,27 +1083,56 @@ func (h *PairingHandlers) reEncryptEntriesForDevice(peerID, deviceID, deviceName
 		entry.UpdatedAt = time.Now()
 		entry.UpdatedBy = cfg.DeviceID
 
-		log.Printf("[Sync] Updated both encrypted password and keys for both devices")
-
-		log.Printf("[Sync] Re-encrypted entry: %s (%s) - key for fingerprint: %s...",
-			entry.Site, entry.Username, fingerprint[:min(20, len(fingerprint))])
-
-		if err := db.UpdateEntry(entry); err != nil {
-			log.Printf("[Sync] Failed to update entry %s: %v", entry.ID, err)
-			continue
-		}
-
-		reEncryptedEntries = append(reEncryptedEntries, p2p.EntryData{
-			ID:                entry.ID,
-			Site:              entry.Site,
-			Username:          entry.Username,
-			EncryptedPassword: entry.EncryptedPassword,
-			EncryptedAESKeys:  entry.EncryptedAESKeys,
-			Notes:             entry.Notes,
-			Version:           int(entry.Version),
-			CreatedAt:         entry.CreatedAt.UnixMilli(),
-			UpdatedAt:         entry.UpdatedAt.UnixMilli(),
+		results = append(results, reEncryptResult{
+			entry: entry,
+			entryData: p2p.EntryData{
+				ID:                entry.ID,
+				Site:              entry.Site,
+				Username:          entry.Username,
+				EncryptedPassword: entry.EncryptedPassword,
+				EncryptedAESKeys:  entry.EncryptedAESKeys,
+				Notes:             entry.Notes,
+				Version:           int(entry.Version),
+				CreatedAt:         entry.CreatedAt.UnixMilli(),
+				UpdatedAt:         entry.UpdatedAt.UnixMilli(),
+			},
 		})
+	}
+
+	// If any entries failed to prepare, abort
+	if failedCount > 0 {
+		log.Printf("[Sync] Aborting re-encryption: %d entries failed to prepare", failedCount)
+		return
+	}
+
+	// Begin atomic transaction
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("[Sync] Failed to begin transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
+	// Update all entries within transaction
+	for _, result := range results {
+		if err := db.UpdateEntryTx(tx, result.entry); err != nil {
+			log.Printf("[Sync] Failed to update entry %s in transaction: %v", result.entry.ID, err)
+			return
+		}
+		log.Printf("[Sync] Re-encrypted entry: %s (%s)", result.entry.Site, result.entry.Username)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("[Sync] Failed to commit re-encryption transaction: %v", err)
+		return
+	}
+
+	log.Printf("[Sync] Atomic re-encryption committed successfully: %d entries updated", len(results))
+
+	reEncryptedEntries := make([]p2p.EntryData, len(results))
+	for i, r := range results {
+		reEncryptedEntries[i] = r.entryData
 	}
 
 	devices, _ := db.ListDevices()

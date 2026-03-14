@@ -14,7 +14,10 @@ import (
 	"github.com/bok1c4/pwman/internal/storage"
 	"github.com/bok1c4/pwman/pkg/models"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
+
+var logger = logrus.New()
 
 type AuthHandlers struct {
 	state       *state.ServerState
@@ -70,6 +73,11 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 
 	cfg, _ := config.LoadVaultConfig(vaultName)
 	if cfg != nil && cfg.DeviceID != "" {
+		logger.WithFields(logrus.Fields{
+			"handler":   "init",
+			"client_ip": r.RemoteAddr,
+			"vault":     vaultName,
+		}).Warn("Init attempt failed - vault already initialized")
 		api.BadRequest(w, "vault already initialized")
 		return
 	}
@@ -109,6 +117,12 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 
 	keyPair, err := crypto.GenerateRSAKeyPair(4096)
 	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"handler":   "init",
+			"client_ip": r.RemoteAddr,
+			"vault":     vaultName,
+			"error":     err.Error(),
+		}).Error("Failed to generate RSA key pair")
 		api.InternalError(w, "failed to generate keys: "+err.Error())
 		return
 	}
@@ -143,6 +157,12 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 
 	db, err := storage.NewSQLite(config.DatabasePathForVault(vaultName))
 	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"handler":   "init",
+			"client_ip": r.RemoteAddr,
+			"vault":     vaultName,
+			"error":     err.Error(),
+		}).Error("Failed to create database")
 		api.InternalError(w, "failed to create database: "+err.Error())
 		return
 	}
@@ -177,6 +197,13 @@ func (h *AuthHandlers) Init(w http.ResponseWriter, r *http.Request) {
 	h.state.SetVault(vault)
 	h.authManager.SetVaultUnlocked(true)
 
+	logger.WithFields(logrus.Fields{
+		"handler":   "init",
+		"client_ip": r.RemoteAddr,
+		"vault":     vaultName,
+		"device_id": deviceID,
+	}).Info("Vault initialized successfully")
+
 	api.Success(w, map[string]string{"device_id": deviceID})
 }
 
@@ -204,12 +231,23 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 
 	activeVault, err := config.GetActiveVault()
 	if err != nil || activeVault == "" {
+		logger.WithFields(logrus.Fields{
+			"handler":   "unlock",
+			"client_ip": r.RemoteAddr,
+			"error":     "no active vault",
+		}).Warn("Unlock attempt failed")
 		api.BadRequest(w, "no active vault")
 		return
 	}
 
 	vaultConfig, err := config.LoadVaultConfig(activeVault)
 	if err != nil || vaultConfig == nil || vaultConfig.DeviceID == "" {
+		logger.WithFields(logrus.Fields{
+			"handler":   "unlock",
+			"client_ip": r.RemoteAddr,
+			"vault":     activeVault,
+			"error":     "vault not initialized",
+		}).Warn("Unlock attempt failed")
 		api.BadRequest(w, "vault not initialized")
 		return
 	}
@@ -217,6 +255,12 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 	privateKeyPath := config.PrivateKeyPathForVault(activeVault)
 	privateKey, err := crypto.LoadAndDecryptPrivateKey(req.Password, privateKeyPath)
 	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"handler":   "unlock",
+			"client_ip": r.RemoteAddr,
+			"vault":     activeVault,
+			"error":     err.Error(),
+		}).Warn("Unlock attempt failed - wrong password")
 		api.Unauthorized(w, "wrong password")
 		return
 	}
@@ -236,6 +280,12 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 
 	db, err := storage.NewSQLite(config.DatabasePathForVault(activeVault))
 	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"handler":   "unlock",
+			"client_ip": r.RemoteAddr,
+			"vault":     activeVault,
+			"error":     err.Error(),
+		}).Error("Failed to open database")
 		api.InternalError(w, "failed to open database")
 		return
 	}
@@ -273,6 +323,12 @@ func (h *AuthHandlers) Unlock(w http.ResponseWriter, r *http.Request) {
 
 	token := h.authManager.GenerateToken()
 	h.authManager.SetVaultUnlocked(true)
+
+	logger.WithFields(logrus.Fields{
+		"handler":   "unlock",
+		"client_ip": r.RemoteAddr,
+		"vault":     activeVault,
+	}).Info("Unlock successful")
 
 	api.Success(w, map[string]string{"token": token})
 }

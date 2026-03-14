@@ -1,13 +1,15 @@
 module github.com/bok1c4/pwman
 
-go 1.25.6
+go 1.24.6
 
 require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/google/uuid v1.6.0
+	github.com/grandcat/zeroconf v1.0.0
 	github.com/lib/pq v1.11.2
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/mattn/go-sqlite3 v1.14.34
+	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.45.0
@@ -26,7 +28,6 @@ require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/ipfs/go-cid v0.5.0 // indirect

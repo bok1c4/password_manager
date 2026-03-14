@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -56,6 +57,7 @@ type peerConnection struct {
 	connected   bool
 	lastSeen    time.Time
 	fingerprint string
+	mu          sync.Mutex
 }
 
 // P2PConfig configures the P2P manager
@@ -82,10 +84,17 @@ type P2PManager struct {
 	tlsMode   bool
 	tlsPeers  map[string]*peerConnection // Internal TLS connections
 
+	// TLS verification fields
+	peerStore          *transport.PeerStore
+	pairingMode        bool
+	pendingFingerprint string
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.RWMutex
 	peers  map[string]PeerInfo // Public peer info (for backward compat)
+
+	stopOnce sync.Once
 
 	deviceName string
 	deviceID   string
@@ -114,6 +123,8 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 		deviceName:          cfg.DeviceName,
 		deviceID:            cfg.DeviceID,
 		tlsMode:             cfg.UseTLS,
+		peerStore:           cfg.PeerStore,
+		pairingMode:         cfg.PairingMode,
 		messageChan:         make(chan ReceivedMessage, 100),
 		pairingRequestChan:  make(chan ReceivedMessage, 10),
 		pairingResponseChan: make(chan ReceivedMessage, 10),
@@ -444,8 +455,34 @@ func (p *P2PManager) ConnectToPeer(addr string) error {
 func (p *P2PManager) connectToPeerTLS(addr string) error {
 	// Parse address (format: "host:port")
 	config := &tls.Config{
-		InsecureSkipVerify: true, // We verify manually
-		MinVersion:         tls.VersionTLS13,
+		MinVersion: tls.VersionTLS13,
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("no certificate presented")
+			}
+
+			// Compute fingerprint
+			fingerprint := transport.CertFingerprint(rawCerts[0])
+
+			// Check if trusted
+			if p.pairingMode {
+				// In pairing mode, store for manual verification
+				p.mu.Lock()
+				p.pendingFingerprint = fingerprint
+				p.mu.Unlock()
+				return nil
+			}
+
+			if p.peerStore == nil {
+				return fmt.Errorf("no peer store configured")
+			}
+
+			if !p.peerStore.IsTrusted(fingerprint) {
+				return fmt.Errorf("certificate %s not trusted", fingerprint)
+			}
+
+			return nil
+		},
 	}
 
 	conn, err := tls.Dial("tcp", addr, config)
@@ -627,6 +664,10 @@ func (p *P2PManager) sendMessageTLS(peerID string, msg SyncMessage) error {
 
 	data = append(data, '\n')
 
+	// Lock peer for entire write operation
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+
 	_, err = peer.writer.Write(data)
 	if err != nil {
 		return err
@@ -739,32 +780,37 @@ func (p *P2PManager) SyncAckChan() <-chan ReceivedMessage {
 }
 
 func (p *P2PManager) Stop() {
-	p.cancel()
+	p.stopOnce.Do(func() {
+		p.cancel()
 
-	if p.discovery != nil {
-		p.discovery.Close()
-	}
+		if p.discovery != nil {
+			p.discovery.Close()
+		}
 
-	if p.host != nil {
-		p.host.Close()
-	}
+		if p.host != nil {
+			p.host.Close()
+		}
 
-	if p.listener != nil {
-		p.listener.Close()
-	}
+		if p.listener != nil {
+			p.listener.Close()
+		}
 
-	// Close all channels
-	close(p.messageChan)
-	close(p.pairingRequestChan)
-	close(p.pairingResponseChan)
-	close(p.syncRequestChan)
-	close(p.syncDataChan)
-	close(p.readyForSyncChan)
-	close(p.syncAckChan)
-	close(p.connectedCh)
-	close(p.disconnectedCh)
+		// Wait a moment for goroutines to finish
+		time.Sleep(100 * time.Millisecond)
 
-	fmt.Println("[P2P] Stopped")
+		// Close all channels
+		close(p.messageChan)
+		close(p.pairingRequestChan)
+		close(p.pairingResponseChan)
+		close(p.syncRequestChan)
+		close(p.syncDataChan)
+		close(p.readyForSyncChan)
+		close(p.syncAckChan)
+		close(p.connectedCh)
+		close(p.disconnectedCh)
+
+		fmt.Println("[P2P] Stopped")
+	})
 }
 
 func (p *P2PManager) IsRunning() bool {
@@ -795,5 +841,34 @@ func (p *P2PManager) SyncWithPeers(fullSync bool) error {
 		}
 	}
 
+	return nil
+}
+
+// GetPendingFingerprint returns the fingerprint of the peer waiting for manual verification during pairing mode
+func (p *P2PManager) GetPendingFingerprint() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.pendingFingerprint
+}
+
+// TrustPendingPeer trusts the pending peer after user verification during pairing
+func (p *P2PManager) TrustPendingPeer(deviceName, deviceID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.pendingFingerprint == "" {
+		return fmt.Errorf("no pending fingerprint to trust")
+	}
+
+	if p.peerStore == nil {
+		return fmt.Errorf("no peer store configured")
+	}
+
+	if err := p.peerStore.Trust(p.pendingFingerprint, deviceName, deviceID); err != nil {
+		return fmt.Errorf("failed to trust peer: %w", err)
+	}
+
+	// Clear pending fingerprint after trusting
+	p.pendingFingerprint = ""
 	return nil
 }

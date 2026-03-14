@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -73,6 +75,45 @@ func NewSQLite(path string) (*SQLite, error) {
 
 func (s *SQLite) Close() error {
 	return s.db.Close()
+}
+
+// Begin starts a transaction
+func (s *SQLite) Begin() (*sql.Tx, error) {
+	return s.db.Begin()
+}
+
+// GetDB returns the underlying database connection
+func (s *SQLite) GetDB() *sql.DB {
+	return s.db
+}
+
+// UpdateEntryTx updates an entry within a transaction
+func (s *SQLite) UpdateEntryTx(tx *sql.Tx, entry *models.PasswordEntry) error {
+	_, err := tx.Exec(
+		"UPDATE entries SET version = ?, site = ?, username = ?, encrypted_password = ?, notes = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+		entry.Version, entry.Site, entry.Username, entry.EncryptedPassword, entry.Notes, entry.UpdatedAt, entry.UpdatedBy, entry.ID,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Update encrypted keys
+	_, err = tx.Exec("DELETE FROM encrypted_keys WHERE entry_id = ?", entry.ID)
+	if err != nil {
+		return err
+	}
+
+	for fp, key := range entry.EncryptedAESKeys {
+		_, err = tx.Exec(
+			"INSERT INTO encrypted_keys (entry_id, device_fingerprint, encrypted_aes_key) VALUES (?, ?, ?)",
+			entry.ID, fp, key,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *SQLite) UpsertDevice(device *models.Device) error {
@@ -301,9 +342,41 @@ func (s *SQLite) UpdateEntry(entry *models.PasswordEntry) error {
 	return tx.Commit()
 }
 
+func generateSecureRandom(length int) string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, length)
+	rand.Read(result)
+	for i := range result {
+		result[i] = chars[result[i]%byte(len(chars))]
+	}
+	return string(result)
+}
+
 func (s *SQLite) DeleteEntry(id string) error {
-	now := "datetime('now')"
-	_, err := s.db.Exec(`UPDATE entries SET deleted_at = ? WHERE id = ?`, now, id)
+	// 1. Get the entry first
+	entry, err := s.GetEntry(id)
+	if err != nil {
+		return err
+	}
+
+	// 2. Securely overwrite sensitive fields with random data
+	entry.EncryptedPassword = generateSecureRandom(len(entry.EncryptedPassword))
+	entry.Notes = generateSecureRandom(len(entry.Notes))
+
+	// 3. Update with garbage data first
+	_, err = s.db.Exec(
+		"UPDATE entries SET encrypted_password = ?, notes = ? WHERE id = ?",
+		entry.EncryptedPassword, entry.Notes, id,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 4. Now mark as deleted
+	_, err = s.db.Exec(
+		"UPDATE entries SET deleted_at = ? WHERE id = ?",
+		time.Now().UTC(), id,
+	)
 	return err
 }
 

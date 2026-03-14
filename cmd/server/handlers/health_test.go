@@ -28,8 +28,13 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
-	if resp["status"] != "ok" {
-		t.Errorf("expected status 'ok', got '%v'", resp["status"])
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected data object in response")
+	}
+
+	if data["status"] != "ok" {
+		t.Errorf("expected status 'ok', got '%v'", data["status"])
 	}
 }
 
@@ -51,7 +56,12 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
-	if _, ok := resp["uptime_seconds"]; !ok {
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected data object in response")
+	}
+
+	if _, ok := data["uptime_seconds"]; !ok {
 		t.Error("expected uptime_seconds in response")
 	}
 }

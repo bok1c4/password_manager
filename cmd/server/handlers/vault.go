@@ -67,6 +67,17 @@ func (h *VaultHandlers) Use(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateVaultName(req.Name); err != nil {
+		api.BadRequest(w, err.Error())
+		return
+	}
+
+	// Check if vault is unlocked - require authentication
+	if !h.state.IsUnlocked() {
+		api.Unauthorized(w, "vault must be unlocked to switch vaults")
+		return
+	}
+
 	globalCfg, err := config.LoadGlobalConfig()
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, "CONFIG_ERROR", err.Error())
@@ -109,6 +120,11 @@ func (h *VaultHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 	if req.Name == "" {
 		api.BadRequest(w, "vault name required")
+		return
+	}
+
+	if err := validateVaultName(req.Name); err != nil {
+		api.BadRequest(w, err.Error())
 		return
 	}
 

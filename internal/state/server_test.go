@@ -246,9 +246,9 @@ func TestConcurrentAccess(t *testing.T) {
 
 func TestPairingAttempt_RateLimiting(t *testing.T) {
 	// Override lockout duration for faster tests
-	oldDuration := LockoutDuration
-	LockoutDuration = 100 * time.Millisecond
-	defer func() { LockoutDuration = oldDuration }()
+	oldDuration := BaseLockoutDelay
+	BaseLockoutDelay = 100 * time.Millisecond
+	defer func() { BaseLockoutDelay = oldDuration }()
 
 	s := NewServerState()
 	peerID := "test-peer-123"
@@ -260,15 +260,33 @@ func TestPairingAttempt_RateLimiting(t *testing.T) {
 		}
 	}
 
-	// 6th attempt should be blocked
+	// 6th attempt should be blocked and trigger lockout
 	if s.RecordPairingAttempt(peerID) {
 		t.Error("6th attempt should be blocked")
 	}
 
 	// After lockout period, should allow more attempts
-	time.Sleep(150 * time.Millisecond)
+	// LockoutCount is now 1, so delay is 100ms * 2 = 200ms
+	time.Sleep(250 * time.Millisecond)
 	if !s.RecordPairingAttempt(peerID) {
 		t.Error("Should reset after lockout")
+	}
+
+	// Test exponential backoff - fail 5 more times to trigger second lockout
+	for i := 0; i < 4; i++ {
+		if !s.RecordPairingAttempt(peerID) {
+			t.Errorf("Attempt %d after first lockout should succeed", i+1)
+		}
+	}
+	// 5th attempt triggers second lockout (LockoutCount = 2)
+	if s.RecordPairingAttempt(peerID) {
+		t.Error("Should be blocked on 5th consecutive failure after lockout")
+	}
+
+	// LockoutCount=2 means multiplier is 4, so delay is 100ms * 4 = 400ms
+	time.Sleep(450 * time.Millisecond)
+	if !s.RecordPairingAttempt(peerID) {
+		t.Error("Should work after second lockout with exponential delay")
 	}
 }
 

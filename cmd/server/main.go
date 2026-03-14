@@ -14,6 +14,7 @@ import (
 	"github.com/bok1c4/pwman/internal/api"
 	"github.com/bok1c4/pwman/internal/middleware"
 	"github.com/bok1c4/pwman/internal/state"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -89,8 +90,13 @@ func main() {
 	healthHandlers := handlers.NewHealthHandlers(serverState)
 	p2pHandlers := handlers.NewP2PHandlers(serverState, authManager)
 	pairingHandlers := handlers.NewPairingHandlers(serverState, authManager, p2pHandlers)
+	syncHandlers := handlers.NewSyncHandlers(serverState)
 
 	p2pHandlers.SetPairingHandlers(pairingHandlers)
+
+	// Create rate limiter for unlock endpoint (5 requests per 30 seconds)
+	// rps = 5/30 = 0.167 requests per second, burst = 5
+	rateLimiter := api.NewRateLimiter(rate.Limit(5.0/30.0), 5)
 
 	cors := middleware.CORS
 	auth := func(next http.HandlerFunc) http.HandlerFunc {
@@ -98,7 +104,7 @@ func main() {
 	}
 
 	http.HandleFunc("/api/init", cors(authHandlers.Init))
-	http.HandleFunc("/api/unlock", cors(authHandlers.Unlock))
+	http.HandleFunc("/api/unlock", cors(rateLimiter.Middleware(authHandlers.Unlock)))
 	http.HandleFunc("/api/lock", auth(authHandlers.Lock))
 	http.HandleFunc("/api/is_unlocked", cors(authHandlers.IsUnlocked))
 	http.HandleFunc("/api/is_initialized", cors(authHandlers.IsInitialized))
@@ -142,6 +148,10 @@ func main() {
 	http.HandleFunc("/api/pairing/generate", auth(pairingHandlers.Generate))
 	http.HandleFunc("/api/pairing/join", cors(pairingHandlers.Join)) // Public - joining doesn't require auth
 	http.HandleFunc("/api/pairing/status", auth(pairingHandlers.Status))
+
+	http.HandleFunc("/api/sync/status", auth(syncHandlers.Status))
+	http.HandleFunc("/api/sync/pull", auth(syncHandlers.Pull))
+	http.HandleFunc("/api/sync/push", auth(syncHandlers.Push))
 
 	port, err := findAvailablePort()
 	if err != nil {

@@ -3,6 +3,8 @@
 package identity
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -165,4 +168,163 @@ func (id *DeviceIdentity) GetBoxPublicKeyBytes() []byte {
 // GetBoxPrivateKey returns a pointer to the X25519 private key
 func (id *DeviceIdentity) GetBoxPrivateKey() *[32]byte {
 	return &id.BoxPrivateKey
+}
+
+// SaveEncrypted saves the identity with password-based encryption
+func (id *DeviceIdentity) SaveEncrypted(path string, masterPassword string) error {
+	// Ensure directory exists
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Generate random salt
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	// Derive key using Argon2id
+	key := argon2.IDKey([]byte(masterPassword), salt, 3, 64*1024, 4, 32)
+
+	// Encrypt the private key seed
+	ciphertext, nonce, err := encryptAESGCM(id.SignPrivateKey.Seed(), key)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt private key: %w", err)
+	}
+
+	// Combine salt + nonce + ciphertext
+	encryptedData := make([]byte, 0, len(salt)+len(nonce)+len(ciphertext))
+	encryptedData = append(encryptedData, salt...)
+	encryptedData = append(encryptedData, nonce...)
+	encryptedData = append(encryptedData, ciphertext...)
+
+	// Save encrypted private key as PEM
+	privPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "ENCRYPTED PRIVATE KEY",
+		Bytes: encryptedData,
+	})
+
+	if err := os.WriteFile(path, privPEM, 0600); err != nil {
+		return fmt.Errorf("failed to save encrypted private key: %w", err)
+	}
+
+	// Save Ed25519 public key as plaintext
+	pubPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "ED25519 PUBLIC KEY",
+		Bytes: id.SignPublicKey,
+	})
+
+	pubPath := path + ".pub"
+	if err := os.WriteFile(pubPath, pubPEM, 0644); err != nil {
+		return fmt.Errorf("failed to save public key: %w", err)
+	}
+
+	return nil
+}
+
+// LoadIdentityEncrypted loads an identity from encrypted files
+func LoadIdentityEncrypted(path string, masterPassword string) (*DeviceIdentity, error) {
+	// Load encrypted private key
+	privData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read encrypted private key: %w", err)
+	}
+
+	block, _ := pem.Decode(privData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode private key PEM")
+	}
+
+	if block.Type != "ENCRYPTED PRIVATE KEY" {
+		return nil, fmt.Errorf("expected ENCRYPTED PRIVATE KEY PEM block, got %s", block.Type)
+	}
+
+	// Extract salt, nonce, and ciphertext
+	if len(block.Bytes) < 28 {
+		return nil, fmt.Errorf("encrypted data too short")
+	}
+
+	salt := block.Bytes[:16]
+	nonce := block.Bytes[16:28]
+	ciphertext := block.Bytes[28:]
+
+	// Derive key using Argon2id
+	key := argon2.IDKey([]byte(masterPassword), salt, 3, 64*1024, 4, 32)
+
+	// Decrypt the private key seed
+	seed, err := decryptAESGCM(ciphertext, nonce, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt private key: %w", err)
+	}
+
+	priv := ed25519.NewKeyFromSeed(seed)
+	pub := priv.Public().(ed25519.PublicKey)
+
+	// Derive X25519 keys per RFC 7748
+	h := sha512.Sum512(priv.Seed())
+	h[0] &= 248
+	h[31] &= 127
+	h[31] |= 64
+
+	var boxPriv, boxPub [32]byte
+	copy(boxPriv[:], h[:32])
+	curve25519.ScalarBaseMult(&boxPub, &boxPriv)
+
+	// Generate fingerprint
+	fpHash := sha256.Sum256(pub)
+	fp := hex.EncodeToString(fpHash[:8])
+
+	return &DeviceIdentity{
+		SignPublicKey:  pub,
+		SignPrivateKey: priv,
+		BoxPublicKey:   boxPub,
+		BoxPrivateKey:  boxPriv,
+		Fingerprint:    fp,
+	}, nil
+}
+
+// encryptAESGCM encrypts plaintext using AES-256-GCM
+func encryptAESGCM(plaintext, key []byte) (ciphertext, nonce []byte, err error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonce = make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	ciphertext = gcm.Seal(nil, nonce, plaintext, nil)
+	return ciphertext, nonce, nil
+}
+
+// decryptAESGCM decrypts ciphertext using AES-256-GCM
+func decryptAESGCM(ciphertext, nonce, key []byte) (plaintext []byte, err error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	if len(nonce) != gcm.NonceSize() {
+		return nil, fmt.Errorf("invalid nonce size")
+	}
+
+	plaintext, err = gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return plaintext, nil
 }
