@@ -3,8 +3,10 @@ package p2p
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -15,9 +17,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+
+	"github.com/bok1c4/pwman/internal/transport"
 )
 
+// PeerInfo is the public peer information exposed to handlers
 type PeerInfo struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -26,44 +31,76 @@ type PeerInfo struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
+// SyncMessage represents a message sent between peers
 type SyncMessage struct {
 	Type      string `json:"type"`
-	PeerID    string `json:"peer_id"` // Sender's ID from message payload
+	PeerID    string `json:"peer_id"`
 	Payload   []byte `json:"payload"`
 	Timestamp int64  `json:"timestamp"`
 }
 
+// ReceivedMessage represents a received message with peer info
 type ReceivedMessage struct {
 	SyncMessage
 	FromPeer string // Actual peer ID from connection
 }
 
+// peerConnection is the internal TLS connection struct
+type peerConnection struct {
+	id          string
+	name        string
+	addr        string
+	conn        *tls.Conn
+	reader      *bufio.Reader
+	writer      *bufio.Writer
+	connected   bool
+	lastSeen    time.Time
+	fingerprint string
+}
+
+// P2PConfig configures the P2P manager
+type P2PConfig struct {
+	DeviceName string
+	DeviceID   string
+	ListenPort int
+	EnableMDNS bool
+
+	// TLS fields (optional - for Phase 2+ TLS mode)
+	Cert        tls.Certificate
+	PeerStore   *transport.PeerStore
+	PairingMode bool
+	UseTLS      bool // If true, use TLS instead of libp2p
+}
+
 type P2PManager struct {
-	host        host.Host
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.RWMutex
-	peers       map[string]PeerInfo
-	deviceName  string
-	deviceID    string
-	messageChan chan ReceivedMessage
-	// Specialized channels for each message type
+	// Legacy libp2p fields
+	host host.Host
+
+	// TLS fields
+	listener  net.Listener
+	tlsConfig *tls.Config
+	tlsMode   bool
+	tlsPeers  map[string]*peerConnection // Internal TLS connections
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.RWMutex
+	peers  map[string]PeerInfo // Public peer info (for backward compat)
+
+	deviceName string
+	deviceID   string
+
+	messageChan         chan ReceivedMessage
 	pairingRequestChan  chan ReceivedMessage
 	pairingResponseChan chan ReceivedMessage
 	syncRequestChan     chan ReceivedMessage
 	syncDataChan        chan ReceivedMessage
 	readyForSyncChan    chan ReceivedMessage
 	syncAckChan         chan ReceivedMessage
-	discovery           mdns.Service
-	connectedCh         chan PeerInfo
-	disconnectedCh      chan string
-}
 
-type P2PConfig struct {
-	DeviceName string
-	DeviceID   string
-	ListenPort int
-	EnableMDNS bool
+	discovery      mdns.Service
+	connectedCh    chan PeerInfo
+	disconnectedCh chan string
 }
 
 func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
@@ -73,8 +110,10 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 		ctx:                 ctx,
 		cancel:              cancel,
 		peers:               make(map[string]PeerInfo),
+		tlsPeers:            make(map[string]*peerConnection),
 		deviceName:          cfg.DeviceName,
 		deviceID:            cfg.DeviceID,
+		tlsMode:             cfg.UseTLS,
 		messageChan:         make(chan ReceivedMessage, 100),
 		pairingRequestChan:  make(chan ReceivedMessage, 10),
 		pairingResponseChan: make(chan ReceivedMessage, 10),
@@ -90,15 +129,46 @@ func NewP2PManager(cfg P2PConfig) (*P2PManager, error) {
 		p.deviceID = uuid.New().String()
 	}
 
+	// Configure TLS if in TLS mode
+	if cfg.UseTLS {
+		p.tlsConfig = transport.ServerTLSConfig(cfg.Cert, cfg.PeerStore, cfg.PairingMode)
+	}
+
 	return p, nil
 }
 
 func (p *P2PManager) Start() error {
+	if p.tlsMode {
+		return p.startTLS()
+	}
+	return p.startLibp2p()
+}
+
+func (p *P2PManager) startTLS() error {
+	// Start TLS listener on random port
+	ln, err := tls.Listen("tcp", ":0", p.tlsConfig)
+	if err != nil {
+		return fmt.Errorf("failed to start TLS listener: %w", err)
+	}
+	p.listener = ln
+
+	fmt.Printf("[P2P] Started TLS listener on %s\n", ln.Addr())
+
+	// Accept loop
+	go p.acceptLoop()
+
+	// Start message router
+	go p.routeMessages()
+
+	return nil
+}
+
+func (p *P2PManager) startLibp2p() error {
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", 0),
 		),
-		libp2p.Transport(tcp.NewTCPTransport),
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.NATPortMap(),
 		libp2p.EnableRelay(),
@@ -157,13 +227,149 @@ func (p *P2PManager) Start() error {
 	fmt.Printf("[P2P] Started with ID: %s\n", p.host.ID())
 	fmt.Printf("[P2P] Listening on: %s\n", p.host.Addrs())
 
-	// Start message router (dispatches messages to specialized channels)
 	go p.routeMessages()
 
 	return nil
 }
 
-// routeMessages dispatches incoming messages to specialized channels based on type
+func (p *P2PManager) acceptLoop() {
+	for {
+		conn, err := p.listener.Accept()
+		if err != nil {
+			select {
+			case <-p.ctx.Done():
+				return
+			default:
+				fmt.Printf("[P2P] Accept error: %v\n", err)
+				continue
+			}
+		}
+
+		tlsConn := conn.(*tls.Conn)
+		go p.handleConnection(tlsConn)
+	}
+}
+
+func (p *P2PManager) handleConnection(conn *tls.Conn) {
+	// Perform handshake if not already done
+	if !conn.ConnectionState().HandshakeComplete {
+		if err := conn.Handshake(); err != nil {
+			fmt.Printf("[P2P] TLS handshake failed: %v\n", err)
+			conn.Close()
+			return
+		}
+	}
+
+	state := conn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		fmt.Printf("[P2P] No peer certificate presented\n")
+		conn.Close()
+		return
+	}
+
+	fingerprint := transport.CertFingerprint(state.PeerCertificates[0].Raw)
+
+	p.mu.Lock()
+	// Check if peer already exists (from ConnectToPeer)
+	if existing, ok := p.tlsPeers[fingerprint]; ok {
+		if existing.conn != nil {
+			existing.conn.Close()
+		}
+	}
+
+	peer := &peerConnection{
+		id:          fingerprint,
+		fingerprint: fingerprint,
+		conn:        conn,
+		reader:      bufio.NewReader(conn),
+		writer:      bufio.NewWriter(conn),
+		connected:   true,
+		lastSeen:    time.Now(),
+	}
+	p.tlsPeers[fingerprint] = peer
+	p.peers[fingerprint] = PeerInfo{
+		ID:        fingerprint,
+		Connected: true,
+		LastSeen:  time.Now(),
+	}
+	p.mu.Unlock()
+
+	p.connectedCh <- PeerInfo{
+		ID:        fingerprint,
+		Connected: true,
+	}
+
+	// Read loop
+	for {
+		line, err := peer.reader.ReadBytes('\n')
+		if err != nil {
+			fmt.Printf("[P2P] Connection closed: %v\n", err)
+			break
+		}
+
+		var msg SyncMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			fmt.Printf("[P2P] Failed to parse message: %v\n", err)
+			continue
+		}
+
+		p.handleMessage(msg, fingerprint)
+	}
+
+	// Cleanup
+	conn.Close()
+	p.mu.Lock()
+	delete(p.tlsPeers, fingerprint)
+	if peer, ok := p.peers[fingerprint]; ok {
+		peer.Connected = false
+		p.peers[fingerprint] = peer
+	}
+	p.mu.Unlock()
+
+	p.disconnectedCh <- fingerprint
+}
+
+func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer string) {
+	receivedMsg := ReceivedMessage{
+		SyncMessage: msg,
+		FromPeer:    fromPeer,
+	}
+
+	switch msg.Type {
+	case MsgTypeRequestSync:
+		fmt.Printf("[P2P] Received sync request from: %s\n", fromPeer)
+		p.messageChan <- receivedMsg
+	case MsgTypeSyncData:
+		fmt.Printf("[P2P] Received sync data from: %s\n", fromPeer)
+		p.messageChan <- receivedMsg
+	case MsgTypeHello:
+		fmt.Printf("[P2P] Received HELLO from: %s\n", fromPeer)
+		p.messageChan <- receivedMsg
+	case MsgTypePairingRequest:
+		fmt.Printf("[P2P] Received PAIRING_REQUEST from: %s\n", fromPeer)
+		p.messageChan <- receivedMsg
+	case MsgTypePairingResponse:
+		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s\n", fromPeer)
+		p.messageChan <- receivedMsg
+	case MsgTypeReadyForSync:
+		fmt.Printf("[P2P] Received READY_FOR_SYNC from: %s\n", fromPeer)
+		select {
+		case p.readyForSyncChan <- receivedMsg:
+		default:
+			fmt.Printf("[P2P] readyForSyncChan is full, dropping message\n")
+		}
+	case MsgTypeSyncAck:
+		fmt.Printf("[P2P] Received SYNC_ACK from: %s\n", fromPeer)
+		select {
+		case p.syncAckChan <- receivedMsg:
+		default:
+			fmt.Printf("[P2P] syncAckChan is full, dropping message\n")
+		}
+	default:
+		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
+	}
+}
+
 func (p *P2PManager) routeMessages() {
 	for {
 		select {
@@ -186,21 +392,27 @@ func (p *P2PManager) routeMessages() {
 	}
 }
 
-// Specialized channel accessors
-func (p *P2PManager) PairingRequestChan() <-chan ReceivedMessage {
-	return p.pairingRequestChan
-}
+func (p *P2PManager) handleStream(stream network.Stream) {
+	fmt.Println("[P2P] New stream handler called")
 
-func (p *P2PManager) PairingResponseChan() <-chan ReceivedMessage {
-	return p.pairingResponseChan
-}
+	reader := bufio.NewReader(stream)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			break
+		}
 
-func (p *P2PManager) SyncRequestChan() <-chan ReceivedMessage {
-	return p.syncRequestChan
-}
+		if len(line) <= 1 {
+			continue
+		}
 
-func (p *P2PManager) SyncDataChan() <-chan ReceivedMessage {
-	return p.syncDataChan
+		var msg SyncMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+
+		p.handleMessage(msg, stream.Conn().RemotePeer().String())
+	}
 }
 
 func (p *P2PManager) enableMDNS() bool {
@@ -208,6 +420,9 @@ func (p *P2PManager) enableMDNS() bool {
 }
 
 func (p *P2PManager) startMDNS() error {
+	if p.host == nil {
+		return fmt.Errorf("libp2p host not initialized")
+	}
 	mdns := mdns.NewMdnsService(p.host, "pwman", p)
 	p.discovery = mdns
 
@@ -219,105 +434,38 @@ func (p *P2PManager) startMDNS() error {
 	return nil
 }
 
-func (p *P2PManager) handleStream(stream network.Stream) {
-	fmt.Println("[P2P] New stream handler called")
-
-	reader := bufio.NewReader(stream)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			break
-		}
-
-		// Skip empty lines
-		if len(line) <= 1 {
-			continue
-		}
-
-		var msg SyncMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			var msgLen = len(line)
-			if msgLen > 50 {
-				msgLen = 50
-			}
-			fmt.Printf("[P2P] Failed to parse message: %v (data: %s)\n", err, string(line[:msgLen]))
-			continue
-		}
-
-		fmt.Printf("[P2P] Received message: %s from %s\n", msg.Type, msg.PeerID)
-		p.handleMessage(msg, stream.Conn().RemotePeer())
-	}
-}
-
-func (p *P2PManager) handleMessage(msg SyncMessage, fromPeer peer.ID) {
-	fmt.Printf("[P2P] handleMessage called: type=%s, fromPeer=%s, msg.PeerID=%s\n", msg.Type, fromPeer, msg.PeerID)
-
-	receivedMsg := ReceivedMessage{
-		SyncMessage: msg,
-		FromPeer:    fromPeer.String(),
-	}
-
-	switch msg.Type {
-	case MsgTypeRequestSync:
-		fmt.Printf("[P2P] Received sync request from: %s\n", fromPeer)
-		p.messageChan <- receivedMsg
-	case MsgTypeSyncData:
-		fmt.Printf("[P2P] Received sync data from: %s\n", fromPeer)
-		p.messageChan <- receivedMsg
-	case MsgTypeHello:
-		fmt.Printf("[P2P] Received HELLO from: %s\n", fromPeer)
-		p.messageChan <- receivedMsg
-	case MsgTypePairingRequest:
-		fmt.Printf("[P2P] Received PAIRING_REQUEST from: %s (msg.PeerID=%s)\n", fromPeer, msg.PeerID)
-		p.messageChan <- receivedMsg
-	case MsgTypePairingResponse:
-		fmt.Printf("[P2P] Received PAIRING_RESPONSE from: %s (msg.PeerID=%s)\n", fromPeer, msg.PeerID)
-		p.messageChan <- receivedMsg
-	case MsgTypeReadyForSync:
-		fmt.Printf("[P2P] Received READY_FOR_SYNC from: %s\n", fromPeer)
-		select {
-		case p.readyForSyncChan <- receivedMsg:
-		default:
-			fmt.Printf("[P2P] readyForSyncChan is full, dropping message\n")
-		}
-	case MsgTypeSyncAck:
-		fmt.Printf("[P2P] Received SYNC_ACK from: %s\n", fromPeer)
-		select {
-		case p.syncAckChan <- receivedMsg:
-		default:
-			fmt.Printf("[P2P] syncAckChan is full, dropping message\n")
-		}
-	default:
-		fmt.Printf("[P2P] Unknown message type: %s\n", msg.Type)
-	}
-}
-
-func (p *P2PManager) HandlePeerFound(info peer.AddrInfo) {
-	fmt.Printf("[P2P] Peer discovered via mDNS: %s with addresses: %v\n", info.ID, info.Addrs)
-
-	if len(info.Addrs) == 0 {
-		fmt.Printf("[P2P] WARNING: No addresses in peer info for %s\n", info.ID)
-	}
-
-	p.host.Peerstore().AddAddrs(info.ID, info.Addrs, 30*time.Minute)
-
-	p.mu.Lock()
-	p.peers[info.ID.String()] = PeerInfo{
-		ID:        info.ID.String(),
-		Connected: true,
-		LastSeen:  time.Now(),
-	}
-	p.mu.Unlock()
-
-	p.connectedCh <- PeerInfo{
-		ID:        info.ID.String(),
-		Connected: true,
-	}
-
-	fmt.Printf("[P2P] Peer discovered via mDNS: %s\n", info.ID)
-}
-
 func (p *P2PManager) ConnectToPeer(addr string) error {
+	if p.tlsMode {
+		return p.connectToPeerTLS(addr)
+	}
+	return p.connectToPeerLibp2p(addr)
+}
+
+func (p *P2PManager) connectToPeerTLS(addr string) error {
+	// Parse address (format: "host:port")
+	config := &tls.Config{
+		InsecureSkipVerify: true, // We verify manually
+		MinVersion:         tls.VersionTLS13,
+	}
+
+	conn, err := tls.Dial("tcp", addr, config)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+
+	// Perform handshake
+	if err := conn.Handshake(); err != nil {
+		conn.Close()
+		return fmt.Errorf("TLS handshake failed: %w", err)
+	}
+
+	// Delegate to handleConnection for registration
+	go p.handleConnection(conn)
+
+	return nil
+}
+
+func (p *P2PManager) connectToPeerLibp2p(addr string) error {
 	fmt.Printf("[P2P] ConnectToPeer called with: %s\n", addr)
 	addrInfo, err := peer.AddrInfoFromString(addr)
 	if err != nil {
@@ -351,6 +499,38 @@ func (p *P2PManager) ConnectToPeer(addr string) error {
 }
 
 func (p *P2PManager) DisconnectFromPeer(peerID string) error {
+	if p.tlsMode {
+		return p.disconnectFromPeerTLS(peerID)
+	}
+	return p.disconnectFromPeerLibp2p(peerID)
+}
+
+func (p *P2PManager) disconnectFromPeerTLS(peerID string) error {
+	p.mu.Lock()
+	peer, ok := p.tlsPeers[peerID]
+	p.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("peer not found: %s", peerID)
+	}
+
+	if peer.conn != nil {
+		peer.conn.Close()
+	}
+
+	p.mu.Lock()
+	delete(p.tlsPeers, peerID)
+	if peer, ok := p.peers[peerID]; ok {
+		peer.Connected = false
+		p.peers[peerID] = peer
+	}
+	p.mu.Unlock()
+
+	p.disconnectedCh <- peerID
+	return nil
+}
+
+func (p *P2PManager) disconnectFromPeerLibp2p(peerID string) error {
 	pid, err := peer.Decode(peerID)
 	if err != nil {
 		return fmt.Errorf("failed to decode peer ID: %w", err)
@@ -368,7 +548,6 @@ func (p *P2PManager) DisconnectFromPeer(peerID string) error {
 	p.mu.Unlock()
 
 	p.disconnectedCh <- peerID
-	fmt.Printf("[P2P] Disconnected from: %s\n", peerID)
 	return nil
 }
 
@@ -397,6 +576,9 @@ func (p *P2PManager) GetAllPeers() []PeerInfo {
 }
 
 func (p *P2PManager) GetPeerID() string {
+	if p.tlsMode {
+		return p.deviceID
+	}
 	if p.host == nil {
 		return ""
 	}
@@ -404,6 +586,13 @@ func (p *P2PManager) GetPeerID() string {
 }
 
 func (p *P2PManager) GetListenAddresses() []string {
+	if p.tlsMode {
+		if p.listener != nil {
+			return []string{p.listener.Addr().String()}
+		}
+		return nil
+	}
+
 	if p.host == nil {
 		return nil
 	}
@@ -416,6 +605,37 @@ func (p *P2PManager) GetListenAddresses() []string {
 }
 
 func (p *P2PManager) SendMessage(peerID string, msg SyncMessage) error {
+	if p.tlsMode {
+		return p.sendMessageTLS(peerID, msg)
+	}
+	return p.sendMessageLibp2p(peerID, msg)
+}
+
+func (p *P2PManager) sendMessageTLS(peerID string, msg SyncMessage) error {
+	p.mu.RLock()
+	peer, ok := p.tlsPeers[peerID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("peer not found: %s", peerID)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	data = append(data, '\n')
+
+	_, err = peer.writer.Write(data)
+	if err != nil {
+		return err
+	}
+
+	return peer.writer.Flush()
+}
+
+func (p *P2PManager) sendMessageLibp2p(peerID string, msg SyncMessage) error {
 	pid, err := peer.Decode(peerID)
 	if err != nil {
 		return fmt.Errorf("failed to decode peer ID: %w", err)
@@ -432,7 +652,6 @@ func (p *P2PManager) SendMessage(peerID string, msg SyncMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// Add newline delimiter
 	data = append(data, '\n')
 
 	_, err = stream.Write(data)
@@ -455,33 +674,32 @@ func (p *P2PManager) BroadcastMessage(msg SyncMessage) {
 	}
 }
 
-func (p *P2PManager) OnPeerConnect(peerInfo peer.AddrInfo) {
+func (p *P2PManager) HandlePeerFound(info peer.AddrInfo) {
+	if p.host == nil {
+		return
+	}
+	fmt.Printf("[P2P] Peer discovered via mDNS: %s with addresses: %v\n", info.ID, info.Addrs)
+
+	if len(info.Addrs) == 0 {
+		fmt.Printf("[P2P] WARNING: No addresses in peer info for %s\n", info.ID)
+	}
+
+	p.host.Peerstore().AddAddrs(info.ID, info.Addrs, 30*time.Minute)
+
 	p.mu.Lock()
-	p.peers[peerInfo.ID.String()] = PeerInfo{
-		ID:        peerInfo.ID.String(),
+	p.peers[info.ID.String()] = PeerInfo{
+		ID:        info.ID.String(),
 		Connected: true,
 		LastSeen:  time.Now(),
 	}
 	p.mu.Unlock()
 
 	p.connectedCh <- PeerInfo{
-		ID:        peerInfo.ID.String(),
+		ID:        info.ID.String(),
 		Connected: true,
 	}
 
-	fmt.Printf("[P2P] Peer connected: %s\n", peerInfo.ID)
-}
-
-func (p *P2PManager) OnPeerDisconnect(peerInfo peer.AddrInfo) {
-	p.mu.Lock()
-	if peer, ok := p.peers[peerInfo.ID.String()]; ok {
-		peer.Connected = false
-		p.peers[peerInfo.ID.String()] = peer
-	}
-	p.mu.Unlock()
-
-	p.disconnectedCh <- peerInfo.ID.String()
-	fmt.Printf("[P2P] Peer disconnected: %s\n", peerInfo.ID)
+	fmt.Printf("[P2P] Peer discovered via mDNS: %s\n", info.ID)
 }
 
 func (p *P2PManager) ConnectedChan() <-chan PeerInfo {
@@ -494,6 +712,22 @@ func (p *P2PManager) DisconnectedChan() <-chan string {
 
 func (p *P2PManager) MessageChan() <-chan ReceivedMessage {
 	return p.messageChan
+}
+
+func (p *P2PManager) PairingRequestChan() <-chan ReceivedMessage {
+	return p.pairingRequestChan
+}
+
+func (p *P2PManager) PairingResponseChan() <-chan ReceivedMessage {
+	return p.pairingResponseChan
+}
+
+func (p *P2PManager) SyncRequestChan() <-chan ReceivedMessage {
+	return p.syncRequestChan
+}
+
+func (p *P2PManager) SyncDataChan() <-chan ReceivedMessage {
+	return p.syncDataChan
 }
 
 func (p *P2PManager) ReadyForSyncChan() <-chan ReceivedMessage {
@@ -515,6 +749,11 @@ func (p *P2PManager) Stop() {
 		p.host.Close()
 	}
 
+	if p.listener != nil {
+		p.listener.Close()
+	}
+
+	// Close all channels
 	close(p.messageChan)
 	close(p.pairingRequestChan)
 	close(p.pairingResponseChan)
@@ -529,6 +768,9 @@ func (p *P2PManager) Stop() {
 }
 
 func (p *P2PManager) IsRunning() bool {
+	if p.tlsMode {
+		return p.listener != nil
+	}
 	return p.host != nil
 }
 
