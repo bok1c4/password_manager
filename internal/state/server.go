@@ -10,6 +10,7 @@ import (
 	"github.com/bok1c4/pwman/internal/crypto"
 	"github.com/bok1c4/pwman/internal/p2p"
 	"github.com/bok1c4/pwman/internal/storage"
+	syncpkg "github.com/bok1c4/pwman/internal/sync"
 )
 
 type Vault struct {
@@ -96,6 +97,9 @@ type ServerState struct {
 	// Rate limiting for pairing attempts
 	pairingAttempts   map[string]*PairingAttempt
 	pairingAttemptsMu sync.Mutex
+
+	// Lamport clock manager for sync protocol
+	ClockManager *syncpkg.ClockManager
 
 	startTime time.Time
 }
