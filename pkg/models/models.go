@@ -3,13 +3,15 @@ package models
 import "time"
 
 type Device struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	PublicKey    string    `json:"public_key"`
-	Fingerprint  string    `json:"fingerprint"`
-	CreatedAt    time.Time `json:"created_at"`
-	Trusted      bool      `json:"trusted"`
-	ApprovalCode string    `json:"approval_code,omitempty"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	PublicKey     string    `json:"public_key"`      // Legacy RSA (for migration)
+	SignPublicKey string    `json:"sign_public_key"` // Ed25519 public key (Phase 3+)
+	BoxPublicKey  string    `json:"box_public_key"`  // X25519 public key (Phase 3+)
+	Fingerprint   string    `json:"fingerprint"`
+	CreatedAt     time.Time `json:"created_at"`
+	Trusted       bool      `json:"trusted"`
+	ApprovalCode  string    `json:"approval_code,omitempty"`
 }
 
 type PasswordEntry struct {
@@ -18,12 +20,15 @@ type PasswordEntry struct {
 	Site              string            `json:"site"`
 	Username          string            `json:"username"`
 	EncryptedPassword string            `json:"encrypted_password"`
-	EncryptedAESKeys  map[string]string `json:"encrypted_aes_keys"`
+	EncryptedAESKeys  map[string]string `json:"encrypted_aes_keys"` // Legacy RSA keys
+	BoxKeys           map[string]string `json:"box_keys"`           // NaCl box keys (Phase 3+)
 	Notes             string            `json:"notes"`
 	CreatedAt         time.Time         `json:"created_at"`
 	UpdatedAt         time.Time         `json:"updated_at"`
 	UpdatedBy         string            `json:"updated_by"`
 	DeletedAt         *time.Time        `json:"deleted_at,omitempty"`
+	LogicalClock      int64             `json:"logical_clock"` // Lamport clock (Phase 4)
+	OriginDevice      string            `json:"origin_device"` // Device that created entry (Phase 4)
 }
 
 type VaultMetadata struct {
